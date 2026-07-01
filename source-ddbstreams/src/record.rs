@@ -60,7 +60,6 @@ impl StreamRecord {
 mod from_sdk {
     use super::{AttrValue, Item, StreamRecord};
     use aws_sdk_dynamodbstreams::types::{AttributeValue as Sdk, Record as SdkRecord};
-    use std::collections::BTreeMap;
 
     fn attr(av: &Sdk) -> AttrValue {
         if let Ok(s) = av.as_s() {
