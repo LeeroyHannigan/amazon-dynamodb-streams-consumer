@@ -1,0 +1,14 @@
+[package]
+name = "ddbstreams-kcl-core"
+version = "0.0.1"
+edition = "2021"
+description = "Rust core engine for a multi-language, JVM-free DynamoDB Streams KCL. Coordination + ordering live here; language bindings (Go first) attach on top."
+
+# Spike is intentionally dependency-free so the ordering engine builds and tests
+# with zero network. The AWS SDK (aws-sdk-dynamodbstreams / aws-sdk-dynamodb) is
+# introduced later behind the StreamSource / LeaseStore traits as an adapter.
+[dependencies]
+
+[lib]
+name = "ddbstreams_kcl_core"
+path = "src/lib.rs"
