@@ -1,0 +1,19 @@
+[package]
+name = "ddbstreams-kcl-lease-dynamodb"
+version = "0.0.1"
+edition = "2021"
+description = "DynamoDB-backed KCL-style lease coordination (optimistic-lock leases) for ddbstreams-kcl. Pure lease logic is always built; the async DynamoDB store is behind the optional `aws` feature."
+
+[features]
+aws = ["dep:aws-config", "dep:aws-sdk-dynamodb", "dep:tokio"]
+
+[dependencies]
+ddbstreams-kcl-core = { path = "../core" }
+aws-config = { version = "1", optional = true }
+aws-sdk-dynamodb = { version = "1", optional = true }
+tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+aws-config = { version = "1" }
+aws-sdk-dynamodb = { version = "1" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

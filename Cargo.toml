@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "core",
     "source-ddbstreams",
+    "lease-dynamodb",
 ]
