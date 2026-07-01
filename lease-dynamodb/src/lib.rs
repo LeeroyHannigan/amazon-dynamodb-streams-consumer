@@ -50,6 +50,7 @@ impl Lease {
 pub mod dynamodb;
 
 pub mod taker;
+pub mod coordinator;
 
 #[cfg(test)]
 mod tests {
