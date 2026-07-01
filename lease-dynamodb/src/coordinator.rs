@@ -1,12 +1,13 @@
 //! Lease coordinator (pure, offline-tested): the "brain" that turns raw lease
-//! rows into take decisions across scan ticks.
+//! rows into take decisions.
 //!
-//! Expiry is detected by **`leaseCounter` freshness**: a lease owned by another
-//! worker is considered expired once its counter has not advanced between two
-//! scans (the owner stopped heartbeating). This mirrors KCL
-//! `DynamoDBLeaseTaker`, which tracks counter-increment freshness over the lease
-//! duration. Feeding the derived snapshot to [`crate::taker::compute_leases_to_take`]
-//! yields the leases this worker should claim. See core/REFERENCES.md.
+//! Expiry follows KCL `DynamoDBLeaseTaker`: each lease has a
+//! `lastCounterIncrementNanos`; a lease owned by another worker is expired once
+//! `now - lastCounterIncrement > leaseDuration` (the owner stopped
+//! heartbeating). We track counter-change times per lease and take a monotonic
+//! clock (`now_ms`) as input so the logic stays pure and deterministically
+//! testable. Take decisions come from [`crate::taker::compute_leases_to_take`].
+//! See core/REFERENCES.md.
 
 use crate::taker::{compute_leases_to_take, LeaseSnapshot};
 use std::collections::HashMap;
@@ -20,55 +21,83 @@ pub struct RawLease {
     pub completed: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct Seen {
+    counter: u64,
+    /// Monotonic time (ms) at which we last observed this lease's counter change.
+    last_change_ms: u64,
+}
+
 /// Stateful, single-worker view of the lease table used to decide takes.
 pub struct LeaseCoordinator {
     me: String,
     max_take: usize,
-    /// Last `leaseCounter` observed per lease, for freshness/expiry detection.
-    last_seen: HashMap<String, u64>,
+    lease_duration_ms: u64,
+    seen: HashMap<String, Seen>,
 }
 
 impl LeaseCoordinator {
-    pub fn new(me: impl Into<String>, max_take: usize) -> Self {
-        Self { me: me.into(), max_take, last_seen: HashMap::new() }
+    pub fn new(me: impl Into<String>, max_take: usize, lease_duration_ms: u64) -> Self {
+        Self {
+            me: me.into(),
+            max_take,
+            lease_duration_ms,
+            seen: HashMap::new(),
+        }
     }
 
-    /// Process one scan of the lease table. Updates freshness tracking and
-    /// returns the lease keys this worker should attempt to take this tick.
-    ///
-    /// Freshness rule: a lease owned by ANOTHER worker is expired iff we saw it
-    /// on a previous tick and its counter has not advanced since. A first
-    /// sighting is given one tick to prove liveness (never stolen immediately).
-    pub fn tick(&mut self, rows: &[RawLease]) -> Vec<String> {
+    /// Process one scan of the lease table at monotonic time `now_ms`. Updates
+    /// counter-freshness tracking and returns the lease keys this worker should
+    /// attempt to take.
+    pub fn tick(&mut self, rows: &[RawLease], now_ms: u64) -> Vec<String> {
+        // Derive expiry from the PRE-update freshness state.
         let snapshot: Vec<LeaseSnapshot> = rows
             .iter()
             .map(|r| LeaseSnapshot {
                 lease_key: r.lease_key.clone(),
                 owner: r.owner.clone(),
-                expired: self.is_expired(r),
+                expired: self.is_expired(r, now_ms),
                 completed: r.completed,
             })
             .collect();
 
-        // Update freshness AFTER deriving expiry for this tick.
+        // Update freshness: a counter that advanced this tick resets the clock.
         for r in rows {
-            self.last_seen.insert(r.lease_key.clone(), r.lease_counter);
+            match self.seen.get_mut(&r.lease_key) {
+                Some(s) => {
+                    if r.lease_counter != s.counter {
+                        s.counter = r.lease_counter;
+                        s.last_change_ms = now_ms;
+                    }
+                }
+                None => {
+                    self.seen.insert(
+                        r.lease_key.clone(),
+                        Seen { counter: r.lease_counter, last_change_ms: now_ms },
+                    );
+                }
+            }
         }
         // Forget leases that disappeared (e.g. deleted after completion).
         let present: std::collections::HashSet<&str> =
             rows.iter().map(|r| r.lease_key.as_str()).collect();
-        self.last_seen.retain(|k, _| present.contains(k.as_str()));
+        self.seen.retain(|k, _| present.contains(k.as_str()));
 
         compute_leases_to_take(&snapshot, &self.me, self.max_take)
     }
 
-    fn is_expired(&self, r: &RawLease) -> bool {
+    fn is_expired(&self, r: &RawLease, now_ms: u64) -> bool {
         match &r.owner {
-            None => false,                              // unowned → available, not "expired"
-            Some(o) if o == &self.me => false,          // mine
-            Some(_) => match self.last_seen.get(&r.lease_key) {
-                Some(&prev) => prev == r.lease_counter, // seen before and stalled
-                None => false,                          // first sighting → give a tick
+            None => false,                      // unowned → available, not "expired"
+            Some(o) if o == &self.me => false,  // mine
+            Some(_) => match self.seen.get(&r.lease_key) {
+                // Counter advanced since we last saw it → owner is alive.
+                Some(s) if r.lease_counter != s.counter => false,
+                // Counter stalled → expired once it has been stale beyond the
+                // lease duration.
+                Some(s) => now_ms.saturating_sub(s.last_change_ms) > self.lease_duration_ms,
+                // First sighting → give it a full duration to prove liveness.
+                None => false,
             },
         }
     }
@@ -78,75 +107,73 @@ impl LeaseCoordinator {
 mod tests {
     use super::*;
 
+    const DUR: u64 = 1000;
+
     fn row(key: &str, owner: Option<&str>, counter: u64, completed: bool) -> RawLease {
         RawLease { lease_key: key.into(), owner: owner.map(|o| o.into()), lease_counter: counter, completed }
     }
 
-    #[test]
-    fn other_workers_leases_not_stolen_on_first_sighting() {
-        // Balanced by count (w1: a,b; w2: c,d) so balancing never triggers —
-        // isolates expiry. First sighting of w2 → alive → take nothing.
-        let mut c = LeaseCoordinator::new("w1", 10);
-        let rows = vec![
+    // Balanced by count (w1: a,b; w2: c,d) so load-balancing never triggers —
+    // isolates expiry behavior.
+    fn balanced() -> Vec<RawLease> {
+        vec![
             row("a", Some("w1"), 1, false),
             row("b", Some("w1"), 1, false),
             row("c", Some("w2"), 5, false),
             row("d", Some("w2"), 5, false),
-        ];
-        assert!(c.tick(&rows).is_empty());
+        ]
     }
 
     #[test]
-    fn stalled_counter_becomes_expired_and_is_taken() {
-        let mut c = LeaseCoordinator::new("w1", 10);
-        let rows = vec![
-            row("a", Some("w1"), 1, false),
-            row("b", Some("w1"), 1, false),
-            row("c", Some("w2"), 5, false),
-            row("d", Some("w2"), 5, false),
-        ];
-        assert!(c.tick(&rows).is_empty()); // tick 1: first sighting, balanced
-        // tick 2: w2 counters unchanged → expired → w1 takes both dead leases.
-        let mut take = c.tick(&rows);
+    fn fresh_worker_not_expired_within_duration() {
+        let mut c = LeaseCoordinator::new("w1", 10, DUR);
+        let rows = balanced();
+        assert!(c.tick(&rows, 0).is_empty()); // first sighting
+        assert!(c.tick(&rows, DUR / 2).is_empty()); // stalled but within duration
+    }
+
+    #[test]
+    fn stalled_beyond_duration_expires_and_is_taken() {
+        let mut c = LeaseCoordinator::new("w1", 10, DUR);
+        let rows = balanced();
+        assert!(c.tick(&rows, 0).is_empty());
+        // Past the lease duration with no counter change → w2 dead → take c,d.
+        let mut take = c.tick(&rows, DUR + 1);
         take.sort();
         assert_eq!(take, vec!["c", "d"]);
     }
 
     #[test]
-    fn advancing_counter_stays_alive() {
-        let mut c = LeaseCoordinator::new("w1", 10);
-        let t1 = vec![
-            row("a", Some("w1"), 1, false),
-            row("b", Some("w1"), 1, false),
-            row("c", Some("w2"), 5, false),
-            row("d", Some("w2"), 5, false),
-        ];
-        c.tick(&t1);
-        // w2 heartbeated (counters advanced) → alive → still balanced → nothing.
-        let t2 = vec![
+    fn advancing_counter_resets_liveness() {
+        let mut c = LeaseCoordinator::new("w1", 10, DUR);
+        c.tick(&balanced(), 0);
+        // Well past the duration, BUT w2's counters advanced this tick → alive.
+        let advanced = vec![
             row("a", Some("w1"), 1, false),
             row("b", Some("w1"), 1, false),
             row("c", Some("w2"), 6, false),
             row("d", Some("w2"), 7, false),
         ];
-        assert!(c.tick(&t2).is_empty());
+        assert!(c.tick(&advanced, DUR * 5).is_empty());
+        // And it stays alive for another full duration from the change.
+        assert!(c.tick(&advanced, DUR * 5 + DUR / 2).is_empty());
     }
 
     #[test]
     fn unowned_taken_immediately() {
-        let mut c = LeaseCoordinator::new("w1", 10);
+        let mut c = LeaseCoordinator::new("w1", 10, DUR);
         let rows = vec![row("a", None, 0, false), row("b", None, 0, false)];
-        let mut take = c.tick(&rows);
+        let mut take = c.tick(&rows, 0);
         take.sort();
         assert_eq!(take, vec!["a", "b"]);
     }
 
     #[test]
     fn forgets_disappeared_leases() {
-        let mut c = LeaseCoordinator::new("w1", 10);
-        c.tick(&[row("a", Some("w2"), 5, false)]);
-        // "a" gone next scan; a brand-new "a" later must get a fresh first-sighting.
-        c.tick(&[]);
-        assert!(c.tick(&[row("a", Some("w2"), 9, false)]).is_empty());
+        let mut c = LeaseCoordinator::new("w1", 10, DUR);
+        c.tick(&[row("x", Some("w2"), 5, false)], 0);
+        c.tick(&[], DUR + 1); // x gone → freshness forgotten
+        // x reappears far in the future → fresh first-sighting → not expired.
+        assert!(c.tick(&[row("x", Some("w2"), 5, false)], DUR * 100).is_empty());
     }
 }
