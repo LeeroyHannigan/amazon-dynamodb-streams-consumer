@@ -24,10 +24,15 @@ pub struct Record {
 }
 
 /// Shard lineage as reported by DescribeStream.
+///
+/// A shard may have UP TO TWO parents: one for a split child, two for a merge
+/// child. Modeling this is mandatory for correctness — see KCL
+/// `ShutdownTask.createLeasesForChildShardsIfNotExist` (a merge child requires
+/// BOTH parents to be accounted for before its lease is created). See REFERENCES.md.
 #[derive(Clone, Debug)]
 pub struct ShardMeta {
     pub id: ShardId,
-    pub parent: Option<ShardId>,
+    pub parents: Vec<ShardId>,
 }
 
 pub struct RecordBatch {
@@ -72,17 +77,20 @@ impl<S: StreamSource, L: LeaseStore> Scheduler<S, L> {
         Self { source, leases }
     }
 
-    /// A shard is eligible only if it has no parent, or its parent has been
-    /// fully processed (SHARD_END + checkpoint). This is the parent-before-child
-    /// guarantee that preserves item-history order across resharding.
+    /// A shard is eligible only if it is not already complete AND every one of
+    /// its parents has been fully processed (SHARD_END + checkpoint). This is the
+    /// parent-before-child guarantee that preserves item-history order across
+    /// resharding. For a merge child (two parents) BOTH must be complete.
+    ///
+    /// Grounded in KCL `HierarchicalShardSyncer` (child leases created only after
+    /// parent SHARD_END) and `ShutdownTask.createLeasesForChildShardsIfNotExist`
+    /// (merge child requires both parents). See REFERENCES.md §Ordering.
     fn eligible(&self, meta: &ShardMeta) -> bool {
         if self.leases.is_complete(&meta.id) {
             return false;
         }
-        match &meta.parent {
-            None => true,
-            Some(p) => self.leases.is_complete(p),
-        }
+        // all() over an empty parent list is true → root shards are eligible.
+        meta.parents.iter().all(|p| self.leases.is_complete(p))
     }
 
     /// Drain all shards in dependency order. Returns when every shard is complete.
@@ -215,8 +223,8 @@ mod tests {
         let source = InMemSource {
             metas: vec![
                 // Deliberately list child first to prove ordering isn't just list order.
-                ShardMeta { id: "shard-child".into(), parent: Some("shard-parent".into()) },
-                ShardMeta { id: "shard-parent".into(), parent: None },
+                ShardMeta { id: "shard-child".into(), parents: vec!["shard-parent".into()] },
+                ShardMeta { id: "shard-parent".into(), parents: vec![] },
             ],
             data,
         };
@@ -247,7 +255,7 @@ mod tests {
         let mut data = HashMap::new();
         data.insert("s".to_string(), vec![rec("s", 10), rec("s", 11), rec("s", 12)]);
         let source = InMemSource {
-            metas: vec![ShardMeta { id: "s".into(), parent: None }],
+            metas: vec![ShardMeta { id: "s".into(), parents: vec![] }],
             data,
         };
         let mut proc = RecordingProcessor::default();
@@ -257,5 +265,44 @@ mod tests {
             proc.events,
             vec!["init:s", "rec:s:10", "rec:s:11", "rec:s:12", "end:s"]
         );
+    }
+
+    /// MERGE case: two parents merge into one child. The child MUST NOT be
+    /// touched until BOTH parents have reached SHARD_END. Sibling parents have
+    /// no ordering guarantee relative to each other, so we assert positionally.
+    /// Grounded in KCL ShutdownTask.createLeasesForChildShardsIfNotExist.
+    #[test]
+    fn merge_child_waits_for_both_parents() {
+        let mut data = HashMap::new();
+        data.insert("p-a".to_string(), vec![rec("p-a", 1), rec("p-a", 2)]);
+        data.insert("p-b".to_string(), vec![rec("p-b", 3), rec("p-b", 4)]);
+        data.insert("child".to_string(), vec![rec("child", 5)]);
+
+        let source = InMemSource {
+            metas: vec![
+                // child listed first again to prove eligibility is by lineage.
+                ShardMeta { id: "child".into(), parents: vec!["p-a".into(), "p-b".into()] },
+                ShardMeta { id: "p-a".into(), parents: vec![] },
+                ShardMeta { id: "p-b".into(), parents: vec![] },
+            ],
+            data,
+        };
+
+        let mut proc = RecordingProcessor::default();
+        let mut sched = Scheduler::new(source, InMemLeases::default());
+        sched.run(&mut proc);
+
+        let pos = |e: &str| proc.events.iter().position(|x| x == e).expect(e);
+        let end_a = pos("end:p-a");
+        let end_b = pos("end:p-b");
+        let child_init = pos("init:child");
+        let child_rec = pos("rec:child:5");
+
+        // Child must start strictly after BOTH parents have ended.
+        assert!(child_init > end_a && child_init > end_b, "child started before both parents ended: {:?}", proc.events);
+        assert!(child_rec > child_init);
+        // Each parent's own records precede its end (per-shard order preserved).
+        assert!(pos("rec:p-a:1") < pos("rec:p-a:2") && pos("rec:p-a:2") < end_a);
+        assert!(pos("rec:p-b:3") < pos("rec:p-b:4") && pos("rec:p-b:4") < end_b);
     }
 }
