@@ -1,0 +1,23 @@
+[package]
+name = "ddbstreams-kcl-worker"
+version = "0.0.1"
+edition = "2021"
+description = "Async worker that composes a StreamSource + LeaseStore + RecordProcessor into an ordering-preserving DynamoDB Streams consumer. Engine + async traits are always built (offline-tested); the concrete AWS wiring is behind the optional `aws` feature."
+
+[features]
+aws = [
+    "dep:ddbstreams-kcl-source-ddbstreams",
+    "dep:ddbstreams-kcl-lease-dynamodb",
+]
+
+[dependencies]
+ddbstreams-kcl-core = { path = "../core" }
+async-trait = "0.1"
+ddbstreams-kcl-source-ddbstreams = { path = "../source-ddbstreams", features = ["aws"], optional = true }
+ddbstreams-kcl-lease-dynamodb = { path = "../lease-dynamodb", features = ["aws"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+aws-config = { version = "1" }
+aws-sdk-dynamodb = { version = "1" }
+aws-sdk-dynamodbstreams = { version = "1" }
