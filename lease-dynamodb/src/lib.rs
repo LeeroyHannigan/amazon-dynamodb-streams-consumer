@@ -49,6 +49,8 @@ impl Lease {
 #[cfg(feature = "aws")]
 pub mod dynamodb;
 
+pub mod taker;
+
 #[cfg(test)]
 mod tests {
     use super::*;
