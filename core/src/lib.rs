@@ -3,18 +3,23 @@
 //!
 //! This crate owns the correctness-critical logic that is IDENTICAL regardless
 //! of how languages attach on top (daemon+IPC "Architecture A" or FFI "B"):
-//!   * shard graph construction (from DescribeStream)
+//!   * shard graph consumption (lineage from DescribeStream, built in
+//!     `ddbstreams-kcl-source-ddbstreams`)
 //!   * ORDERING: single-owner-per-shard (in-sequence) + parent-before-child
 //!   * checkpointing
 //!
 //! AWS is abstracted behind `StreamSource` + `LeaseStore` so the engine is unit
 //! testable with zero network. The real DDB Streams / DynamoDB adapters are
-//! added later as implementors of these traits.
+//! added as implementors of these traits.
 
 pub type ShardId = String;
-/// Spike uses a numeric sequence; real DDB Streams sequence numbers are opaque
-/// monotonic strings — swapped in when the SDK adapter lands.
-pub type SequenceNumber = u64;
+
+/// DynamoDB Streams sequence number. This is an **opaque, monotonically
+/// increasing token** (a stringified 128-bit integer) — NOT something to
+/// compare or parse. The engine only ever stores the last-seen value as a
+/// checkpoint and hands it back to the source, which resumes via an
+/// `AFTER_SEQUENCE_NUMBER` iterator (matching KCL, which treats it as opaque).
+pub type SequenceNumber = String;
 
 #[derive(Clone, Debug)]
 pub struct Record {
@@ -45,7 +50,9 @@ pub struct RecordBatch {
 /// testable in-memory and so a Kinesis source could be slotted in later.
 pub trait StreamSource {
     fn describe_shards(&self) -> Vec<ShardMeta>;
-    /// Return records after `after` (exclusive); None = from TRIM_HORIZON.
+    /// Return records after the opaque checkpoint `after` (exclusive); `None`
+    /// means from `TRIM_HORIZON`. Implementations resume server-side via an
+    /// `AFTER_SEQUENCE_NUMBER` shard iterator — they do NOT compare tokens.
     fn get_records(&self, shard: &ShardId, after: Option<SequenceNumber>) -> RecordBatch;
 }
 
@@ -114,10 +121,12 @@ impl<S: StreamSource, L: LeaseStore> Scheduler<S, L> {
                     let after = self.leases.last_checkpoint(&meta.id);
                     let batch = self.source.get_records(&meta.id, after);
                     if !batch.records.is_empty() {
-                        // Invariant: records within a shard arrive in seq order.
+                        // Records within a shard arrive in sequence order, so the
+                        // LAST one is the newest — checkpoint it. We never compare
+                        // sequence tokens (they are opaque).
                         processor.process_records(&batch.records);
-                        let max = batch.records.iter().map(|r| r.seq).max().unwrap();
-                        self.leases.checkpoint(&meta.id, max);
+                        let last = batch.records.last().unwrap().seq.clone();
+                        self.leases.checkpoint(&meta.id, last);
                     }
                     if batch.shard_end {
                         processor.shard_ended(&meta.id);
@@ -130,9 +139,7 @@ impl<S: StreamSource, L: LeaseStore> Scheduler<S, L> {
                 }
             }
             if !progressed {
-                // No eligible shard advanced — would only happen on an
-                // inconsistent shard graph; a real impl re-syncs here.
-                break;
+                break; // inconsistent shard graph; a real impl would re-sync
             }
         }
     }
@@ -149,7 +156,7 @@ mod tests {
 
     struct InMemSource {
         metas: Vec<ShardMeta>,
-        // shard -> records (assumed pre-sorted by seq)
+        // shard -> records (pre-sorted by sequence order)
         data: HashMap<ShardId, Vec<Record>>,
     }
 
@@ -159,11 +166,16 @@ mod tests {
         }
         fn get_records(&self, shard: &ShardId, after: Option<SequenceNumber>) -> RecordBatch {
             let all = self.data.get(shard).cloned().unwrap_or_default();
-            let records: Vec<Record> = all
-                .into_iter()
-                .filter(|r| after.map_or(true, |a| r.seq > a))
-                .collect();
-            // In this fake, once we've handed everything over, the shard is closed.
+            // Opaque-token resume: return everything after the record whose seq
+            // equals `after` (position-based, like an AFTER_SEQUENCE_NUMBER
+            // iterator would server-side). No numeric comparison.
+            let records = match after {
+                None => all,
+                Some(tok) => match all.iter().position(|r| r.seq == tok) {
+                    Some(idx) => all[idx + 1..].to_vec(),
+                    None => all, // token not found → from start
+                },
+            };
             RecordBatch { records, shard_end: true }
         }
     }
@@ -178,7 +190,7 @@ mod tests {
             self.checkpoints.insert(shard.clone(), seq);
         }
         fn last_checkpoint(&self, shard: &ShardId) -> Option<SequenceNumber> {
-            self.checkpoints.get(shard).copied()
+            self.checkpoints.get(shard).cloned()
         }
         fn mark_complete(&mut self, shard: &ShardId) {
             self.complete.insert(shard.clone(), true);
@@ -188,7 +200,6 @@ mod tests {
         }
     }
 
-    /// Records the exact order of engine callbacks so we can assert ordering.
     #[derive(Default)]
     struct RecordingProcessor {
         events: Vec<String>,
@@ -207,8 +218,8 @@ mod tests {
         }
     }
 
-    fn rec(shard: &str, seq: SequenceNumber) -> Record {
-        Record { shard_id: shard.to_string(), seq, data: vec![] }
+    fn rec(shard: &str, seq: &str) -> Record {
+        Record { shard_id: shard.to_string(), seq: seq.to_string(), data: vec![] }
     }
 
     /// SPIKE SUCCESS CRITERION: a parent shard splits into a child; the engine
@@ -217,8 +228,8 @@ mod tests {
     #[test]
     fn parent_before_child_ordering() {
         let mut data = HashMap::new();
-        data.insert("shard-parent".to_string(), vec![rec("shard-parent", 1), rec("shard-parent", 2)]);
-        data.insert("shard-child".to_string(), vec![rec("shard-child", 3), rec("shard-child", 4)]);
+        data.insert("shard-parent".to_string(), vec![rec("shard-parent", "1"), rec("shard-parent", "2")]);
+        data.insert("shard-child".to_string(), vec![rec("shard-child", "3"), rec("shard-child", "4")]);
 
         let source = InMemSource {
             metas: vec![
@@ -253,7 +264,7 @@ mod tests {
     #[test]
     fn per_shard_sequence_order() {
         let mut data = HashMap::new();
-        data.insert("s".to_string(), vec![rec("s", 10), rec("s", 11), rec("s", 12)]);
+        data.insert("s".to_string(), vec![rec("s", "10"), rec("s", "11"), rec("s", "12")]);
         let source = InMemSource {
             metas: vec![ShardMeta { id: "s".into(), parents: vec![] }],
             data,
@@ -274,13 +285,12 @@ mod tests {
     #[test]
     fn merge_child_waits_for_both_parents() {
         let mut data = HashMap::new();
-        data.insert("p-a".to_string(), vec![rec("p-a", 1), rec("p-a", 2)]);
-        data.insert("p-b".to_string(), vec![rec("p-b", 3), rec("p-b", 4)]);
-        data.insert("child".to_string(), vec![rec("child", 5)]);
+        data.insert("p-a".to_string(), vec![rec("p-a", "1"), rec("p-a", "2")]);
+        data.insert("p-b".to_string(), vec![rec("p-b", "3"), rec("p-b", "4")]);
+        data.insert("child".to_string(), vec![rec("child", "5")]);
 
         let source = InMemSource {
             metas: vec![
-                // child listed first again to prove eligibility is by lineage.
                 ShardMeta { id: "child".into(), parents: vec!["p-a".into(), "p-b".into()] },
                 ShardMeta { id: "p-a".into(), parents: vec![] },
                 ShardMeta { id: "p-b".into(), parents: vec![] },
@@ -297,11 +307,8 @@ mod tests {
         let end_b = pos("end:p-b");
         let child_init = pos("init:child");
         let child_rec = pos("rec:child:5");
-
-        // Child must start strictly after BOTH parents have ended.
-        assert!(child_init > end_a && child_init > end_b, "child started before both parents ended: {:?}", proc.events);
+        assert!(child_init > end_a && child_init > end_b, "child before both parents ended: {:?}", proc.events);
         assert!(child_rec > child_init);
-        // Each parent's own records precede its end (per-shard order preserved).
         assert!(pos("rec:p-a:1") < pos("rec:p-a:2") && pos("rec:p-a:2") < end_a);
         assert!(pos("rec:p-b:3") < pos("rec:p-b:4") && pos("rec:p-b:4") < end_b);
     }
@@ -311,11 +318,10 @@ mod tests {
     #[test]
     fn reshard_storm_multilevel_ordering() {
         let mut data = HashMap::new();
-        data.insert("g0".to_string(), vec![rec("g0", 1)]);
-        data.insert("g1".to_string(), vec![rec("g1", 2)]);
-        data.insert("g2".to_string(), vec![rec("g2", 3)]);
+        data.insert("g0".to_string(), vec![rec("g0", "1")]);
+        data.insert("g1".to_string(), vec![rec("g1", "2")]);
+        data.insert("g2".to_string(), vec![rec("g2", "3")]);
         let source = InMemSource {
-            // listed leaf-first to prove ordering is by lineage, not list order.
             metas: vec![
                 ShardMeta { id: "g2".into(), parents: vec!["g1".into()] },
                 ShardMeta { id: "g1".into(), parents: vec!["g0".into()] },
@@ -341,13 +347,13 @@ mod tests {
     #[test]
     fn resumes_after_checkpoint() {
         let mut data = HashMap::new();
-        data.insert("s".to_string(), vec![rec("s", 10), rec("s", 11), rec("s", 12)]);
+        data.insert("s".to_string(), vec![rec("s", "10"), rec("s", "11"), rec("s", "12")]);
         let source = InMemSource {
             metas: vec![ShardMeta { id: "s".into(), parents: vec![] }],
             data,
         };
         let mut leases = InMemLeases::default();
-        leases.checkpoint(&"s".to_string(), 11); // records <= 11 already processed
+        leases.checkpoint(&"s".to_string(), "11".to_string()); // <= 11 already processed
         let mut proc = RecordingProcessor::default();
         let mut sched = Scheduler::new(source, leases);
         sched.run(&mut proc);
