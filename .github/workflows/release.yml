@@ -18,7 +18,7 @@ jobs:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v5
       - uses: taiki-e/create-gh-release-action@v1
         with:
           # Pull the release notes for this version out of the changelog.
@@ -39,7 +39,7 @@ jobs:
           - { os: macos-13, target: x86_64-apple-darwin }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v5
       # Builds the sidecar for the target and uploads a tarball to the release.
       # Handles cross-compilation (incl. linux aarch64) and archiving.
       - uses: taiki-e/upload-rust-binary-action@v1
@@ -54,7 +54,7 @@ jobs:
     needs: create-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
@@ -90,7 +90,7 @@ jobs:
   #     needs: create-release
   #     runs-on: ubuntu-latest
   #     steps:
-  #       - uses: actions/checkout@v7
+  #       - uses: actions/checkout@v5
   #       - uses: dtolnay/rust-toolchain@stable
   #       - run: |
   #           for c in core protocol source lease worker sidecar; do
