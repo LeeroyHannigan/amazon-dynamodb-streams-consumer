@@ -5,4 +5,5 @@ members = [
     "source-ddbstreams",
     "lease-dynamodb",
     "worker",
+    "protocol",
 ]

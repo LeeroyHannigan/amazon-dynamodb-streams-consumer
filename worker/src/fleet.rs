@@ -10,9 +10,9 @@
 //! This mirrors KCL's model (one record processor per shard, concurrent) on top
 //! of the pure primitives in `core`.
 
-use crate::{eligible, AsyncLeaseStore, AsyncStreamSource, WorkerError};
+use crate::{eligible, AsyncLeaseStore, AsyncShardConsumer, AsyncStreamSource, ShardConsumerFactory, WorkerError};
 use ddbstreams_kcl_core::coordinator::LeaseCoordinator;
-use ddbstreams_kcl_core::{RecordProcessor, RecordProcessorFactory, ShardId};
+use ddbstreams_kcl_core::ShardId;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
@@ -29,7 +29,7 @@ pub struct FleetConfig {
 pub struct Fleet<S, L> {
     source: Arc<S>,
     leases: Arc<L>,
-    factory: Arc<dyn RecordProcessorFactory>,
+    factory: Arc<dyn ShardConsumerFactory>,
     config: FleetConfig,
 }
 
@@ -38,7 +38,7 @@ where
     S: AsyncStreamSource + Send + Sync + 'static,
     L: AsyncLeaseStore + Send + Sync + 'static,
 {
-    pub fn new(source: S, leases: L, factory: Arc<dyn RecordProcessorFactory>, config: FleetConfig) -> Self {
+    pub fn new(source: S, leases: L, factory: Arc<dyn ShardConsumerFactory>, config: FleetConfig) -> Self {
         Self { source: Arc::new(source), leases: Arc::new(leases), factory, config }
     }
 
@@ -118,7 +118,7 @@ where
             }
             let src = self.source.clone();
             let lease = self.leases.clone();
-            let processor = self.factory.create(&meta.id);
+            let consumer = self.factory.create(&meta.id);
             let task = ShardTask {
                 owner: self.config.owner.clone(),
                 shard: meta.id.clone(),
@@ -127,7 +127,7 @@ where
                 poll_interval_ms: self.config.poll_interval_ms,
             };
             set.spawn(async move {
-                let _ = process_shard(src, lease, processor, task).await;
+                let _ = process_shard(src, lease, consumer, task).await;
             });
         }
         while set.join_next().await.is_some() {}
@@ -152,7 +152,7 @@ struct ShardTask {
 async fn process_shard<S, L>(
     source: Arc<S>,
     leases: Arc<L>,
-    mut processor: Box<dyn RecordProcessor + Send>,
+    mut consumer: Box<dyn AsyncShardConsumer + Send>,
     task: ShardTask,
 ) -> Result<(), WorkerError>
 where
@@ -160,26 +160,37 @@ where
     L: AsyncLeaseStore,
 {
     let ShardTask { owner, shard, mut counter, checkpoint, poll_interval_ms } = task;
-    processor.initialize(&shard);
     // Resume from the lease's persisted checkpoint (None = TRIM_HORIZON for a
     // brand-new shard). This is what makes re-processing idempotent across
-    // cycles and correct across a restart.
+    // cycles and correct across a restart. (The consumer was initialized for
+    // this shard by the factory.)
     let mut after: Option<String> = checkpoint;
     loop {
         let batch = source.get_records(&shard, after.clone()).await?;
         if !batch.records.is_empty() {
-            processor.process_records(&batch.records);
             let last = batch.records.last().unwrap().seq.clone();
-            match leases.checkpoint(&shard, &owner, counter, &last).await {
-                Ok(c) => {
-                    counter = c;
-                    after = Some(last);
+            // Deliver and let the consumer decide the checkpoint (its ack). A
+            // sidecar returns the seq the client durably processed; the sync
+            // in-process adapter returns the batch's last seq.
+            match consumer.deliver(&batch.records).await {
+                Ok(Some(ack)) => match leases.checkpoint(&shard, &owner, counter, &ack).await {
+                    Ok(c) => counter = c,
+                    Err(_) => return Ok(()), // lease lost → stop
+                },
+                Ok(None) => {
+                    // Delivered but not acked: hold the lease without advancing
+                    // the durable checkpoint (heartbeat).
+                    match leases.renew(&shard, &owner, counter).await {
+                        Ok(c) => counter = c,
+                        Err(_) => return Ok(()),
+                    }
                 }
-                Err(_) => return Ok(()), // lease lost → stop
+                Err(_) => return Ok(()), // delivery failed → stop; lease expires
             }
+            after = Some(last);
         }
         if batch.shard_end {
-            processor.shard_ended(&shard);
+            let _ = consumer.shard_ended().await;
             let _ = leases.mark_complete(&shard, &owner, counter).await;
             return Ok(());
         }
@@ -196,9 +207,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LeaseHandle, LeaseView};
+    use crate::{LeaseHandle, LeaseView, SyncConsumerFactory};
     use ddbstreams_kcl_core::coordinator::RawLease;
-    use ddbstreams_kcl_core::{Record, RecordBatch, ShardMeta};
+    use ddbstreams_kcl_core::{Record, RecordBatch, RecordProcessor, RecordProcessorFactory, ShardMeta};
     use std::collections::HashMap;
     use std::sync::Mutex;
 
@@ -317,7 +328,7 @@ mod tests {
         let fleet = Fleet::new(
             source,
             FakeLeases::default(),
-            factory,
+            Arc::new(SyncConsumerFactory::new(factory)),
             FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 1000, poll_interval_ms: 1 },
         );
 
@@ -347,7 +358,7 @@ mod tests {
         let fleet = Fleet::new(
             source,
             FakeLeases::default(),
-            factory,
+            Arc::new(SyncConsumerFactory::new(factory)),
             FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 1000, poll_interval_ms: 1 },
         );
         fleet.run_until_complete(10).await.unwrap();
@@ -391,7 +402,7 @@ mod tests {
         let fleet = Fleet::new(
             source,
             FakeLeases::default(),
-            factory,
+            Arc::new(SyncConsumerFactory::new(factory)),
             FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 100_000, poll_interval_ms: 1 },
         );
 

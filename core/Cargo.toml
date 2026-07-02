@@ -7,7 +7,11 @@ description = "Rust core engine for a multi-language, JVM-free DynamoDB Streams 
 # Spike is intentionally dependency-free so the ordering engine builds and tests
 # with zero network. The AWS SDK (aws-sdk-dynamodbstreams / aws-sdk-dynamodb) is
 # introduced later behind the StreamSource / LeaseStore traits as an adapter.
+# serde/serde_json are pure (no network) and back the typed StreamRecord payload
+# model, shared by the DDB source and the language-binding wire protocol.
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [lib]
 name = "ddbstreams_kcl_core"

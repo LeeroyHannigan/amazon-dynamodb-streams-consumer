@@ -184,7 +184,7 @@ async fn run_fleet(
     let fleet = Fleet::new(
         source,
         leases,
-        factory,
+        Arc::new(ddbstreams_kcl_worker::SyncConsumerFactory::new(factory)),
         FleetConfig {
             owner: "fleet-w1".into(),
             max_leases: 100,

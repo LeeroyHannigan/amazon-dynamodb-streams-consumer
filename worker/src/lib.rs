@@ -72,6 +72,70 @@ pub trait AsyncLeaseStore {
     ) -> Result<(), WorkerError>;
 }
 
+/// Async, ack-gated per-shard delivery used by the [`fleet::Fleet`]. Unlike the
+/// synchronous [`RecordProcessor`] (fine for the in-process [`Worker`]), a
+/// consumer's [`deliver`](AsyncShardConsumer::deliver) is `async` and returns
+/// the sequence number to checkpoint — so a language-binding sidecar can stream
+/// a batch to the client and only checkpoint once the client acks (at-least-once).
+#[async_trait::async_trait]
+pub trait AsyncShardConsumer: Send {
+    /// Deliver a batch (already in sequence order). Returns `Some(seq)` to
+    /// checkpoint that sequence under the optimistic lock, or `None` to deliver
+    /// without advancing the durable checkpoint (the lease is heartbeated instead).
+    async fn deliver(
+        &mut self,
+        records: &[ddbstreams_kcl_core::Record],
+    ) -> Result<Option<String>, WorkerError>;
+    /// The shard reached SHARD_END.
+    async fn shard_ended(&mut self) -> Result<(), WorkerError>;
+}
+
+/// Creates one [`AsyncShardConsumer`] per shard (KCL's per-shard processor model).
+pub trait ShardConsumerFactory: Send + Sync {
+    fn create(&self, shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send>;
+}
+
+/// Adapts a synchronous [`RecordProcessorFactory`] into a [`ShardConsumerFactory`]
+/// so the in-process (non-sidecar) path keeps the simple sync `RecordProcessor`
+/// API. Each delivered batch is checkpointed at its last sequence number.
+pub struct SyncConsumerFactory {
+    inner: std::sync::Arc<dyn ddbstreams_kcl_core::RecordProcessorFactory>,
+}
+
+impl SyncConsumerFactory {
+    pub fn new(inner: std::sync::Arc<dyn ddbstreams_kcl_core::RecordProcessorFactory>) -> Self {
+        Self { inner }
+    }
+}
+
+impl ShardConsumerFactory for SyncConsumerFactory {
+    fn create(&self, shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send> {
+        let mut processor = self.inner.create(shard);
+        processor.initialize(shard);
+        Box::new(SyncConsumer { processor, shard: shard.clone() })
+    }
+}
+
+struct SyncConsumer {
+    processor: Box<dyn RecordProcessor + Send>,
+    shard: ShardId,
+}
+
+#[async_trait::async_trait]
+impl AsyncShardConsumer for SyncConsumer {
+    async fn deliver(
+        &mut self,
+        records: &[ddbstreams_kcl_core::Record],
+    ) -> Result<Option<String>, WorkerError> {
+        self.processor.process_records(records);
+        Ok(records.last().map(|r| r.seq.clone()))
+    }
+    async fn shard_ended(&mut self) -> Result<(), WorkerError> {
+        self.processor.shard_ended(&self.shard);
+        Ok(())
+    }
+}
+
 pub struct Worker<S, L> {
     source: S,
     leases: L,

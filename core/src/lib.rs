@@ -17,6 +17,7 @@ pub mod coordinator;
 pub mod cleanup;
 pub mod multistream;
 pub mod backoff;
+pub mod record;
 
 pub type ShardId = String;
 /// DynamoDB Streams sequence number. This is an **opaque, monotonically
