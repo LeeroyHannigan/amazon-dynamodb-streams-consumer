@@ -1,4 +1,4 @@
-# ddbstreams-kcl (Python client)
+# amazon-dynamodb-streams-consumer (Python client)
 
 A **JVM-free** DynamoDB Streams KCL consumer for Python. Your code stays pure
 Python; all the hard parts — shard discovery, DynamoDB leases, ordering,
@@ -45,10 +45,10 @@ native Python (`S`→str, `N`→str to stay lossless, `Bool`→bool, `Null`→No
 
 ## The sidecar binary
 
-The library needs the `ddbstreams-kcl-sidecar` binary. Resolution order:
+The library needs the `amazon-dynamodb-streams-consumer-sidecar` binary. Resolution order:
 1. `sidecar_path=...` argument
-2. `DDBSTREAMS_KCL_SIDECAR` environment variable
-3. `ddbstreams-kcl-sidecar` on `PATH`
+2. `DDB_STREAMS_CONSUMER_SIDECAR` environment variable
+3. `amazon-dynamodb-streams-consumer-sidecar` on `PATH`
 
 AWS credentials and region are picked up by the sidecar from the standard AWS
 environment (same as any AWS SDK).
@@ -63,7 +63,7 @@ environment (same as any AWS SDK).
 ```bash
 python3 -m unittest discover -s tests          # hermetic tests (fake sidecar)
 # live smoke against a real stream + the built binary:
-DDBSTREAMS_KCL_SIDECAR=../../target/debug/ddbstreams-kcl-sidecar \
+DDB_STREAMS_CONSUMER_SIDECAR=../../target/debug/amazon-dynamodb-streams-consumer-sidecar \
   python3 examples/live_smoke.py <stream_arn> <lease_table> <region>
 ```
 

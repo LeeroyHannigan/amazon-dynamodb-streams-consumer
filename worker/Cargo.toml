@@ -1,21 +1,21 @@
 [package]
-name = "ddbstreams-kcl-worker"
+name = "amazon-dynamodb-streams-consumer-worker"
 version = "0.0.1"
 edition = "2021"
 description = "Async worker that composes a StreamSource + LeaseStore + RecordProcessor into an ordering-preserving DynamoDB Streams consumer. Engine + async traits are always built (offline-tested); the concrete AWS wiring is behind the optional `aws` feature."
 
 [features]
 aws = [
-    "dep:ddbstreams-kcl-source-ddbstreams",
-    "dep:ddbstreams-kcl-lease-dynamodb",
+    "dep:amazon-dynamodb-streams-consumer-source-ddbstreams",
+    "dep:amazon-dynamodb-streams-consumer-lease-dynamodb",
 ]
 
 [dependencies]
-ddbstreams-kcl-core = { path = "../core" }
+amazon-dynamodb-streams-consumer-core = { path = "../core" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "time", "macros"] }
-ddbstreams-kcl-source-ddbstreams = { path = "../source-ddbstreams", features = ["aws"], optional = true }
-ddbstreams-kcl-lease-dynamodb = { path = "../lease-dynamodb", features = ["aws"], optional = true }
+amazon-dynamodb-streams-consumer-source-ddbstreams = { path = "../source-ddbstreams", features = ["aws"], optional = true }
+amazon-dynamodb-streams-consumer-lease-dynamodb = { path = "../lease-dynamodb", features = ["aws"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

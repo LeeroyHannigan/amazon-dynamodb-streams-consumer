@@ -1,5 +1,5 @@
 #![cfg(feature = "aws")]
-//! Live multi-worker lease-steal test. Skipped unless `DDBSTREAMS_KCL_IT=1`.
+//! Live multi-worker lease-steal test. Skipped unless `DDB_STREAMS_CONSUMER_IT=1`.
 //!
 //! Scenario: w1 acquires 4 leases, stays alive on 2 (renews) and "dies" on 2.
 //! w2 runs the pure taker over a snapshot (2 leases flagged expired), then
@@ -8,23 +8,23 @@
 //! deletes its own lease table.
 //!
 //! Run:
-//!   DDBSTREAMS_KCL_IT=1 cargo test -p ddbstreams-kcl-lease-dynamodb \
+//!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-lease-dynamodb \
 //!     --features aws --test live_steal -- --nocapture
 
 use aws_sdk_dynamodb as ddb;
-use ddbstreams_kcl_core::taker::{compute_leases_to_take, LeaseSnapshot};
-use ddbstreams_kcl_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
+use amazon_dynamodb_streams_consumer_core::taker::{compute_leases_to_take, LeaseSnapshot};
+use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
 
 #[tokio::test]
 async fn live_worker_steals_expired_leases() {
-    if std::env::var("DDBSTREAMS_KCL_IT").is_err() {
-        eprintln!("skipping live steal test (set DDBSTREAMS_KCL_IT=1 to run)");
+    if std::env::var("DDB_STREAMS_CONSUMER_IT").is_err() {
+        eprintln!("skipping live steal test (set DDB_STREAMS_CONSUMER_IT=1 to run)");
         return;
     }
 
     let cfg = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let client = ddb::Client::new(&cfg);
-    let table = format!("ddbstreams-kcl-steal-it-{}", std::process::id());
+    let table = format!("amazon-dynamodb-streams-consumer-steal-it-{}", std::process::id());
     let store = DynamoDbLeaseStore::new(client.clone(), &table);
     store.ensure_table().await.expect("ensure_table");
 

@@ -1,4 +1,4 @@
-//! Async worker for ddbstreams-kcl.
+//! Async worker for amazon-dynamodb-streams-consumer.
 //!
 //! Composes an [`AsyncStreamSource`] (DynamoDB Streams) + an [`AsyncLeaseStore`]
 //! (DynamoDB) + a [`RecordProcessor`] (customer logic) into a single
@@ -11,8 +11,8 @@
 //! engine + async traits are always built and unit-tested with in-memory fakes;
 //! the concrete AWS trait impls live in the `aws` module behind the `aws` feature.
 
-use ddbstreams_kcl_core::{RecordBatch, RecordProcessor, ShardId, ShardMeta};
-use ddbstreams_kcl_core::coordinator::RawLease;
+use amazon_dynamodb_streams_consumer_core::{RecordBatch, RecordProcessor, ShardId, ShardMeta};
+use amazon_dynamodb_streams_consumer_core::coordinator::RawLease;
 use std::collections::HashSet;
 
 #[cfg(feature = "aws")]
@@ -87,7 +87,7 @@ pub trait AsyncShardConsumer: Send {
     /// without advancing the durable checkpoint (the lease is heartbeated instead).
     async fn deliver(
         &mut self,
-        records: &[ddbstreams_kcl_core::Record],
+        records: &[amazon_dynamodb_streams_consumer_core::Record],
     ) -> Result<Option<String>, WorkerError>;
     /// The shard reached SHARD_END.
     async fn shard_ended(&mut self) -> Result<(), WorkerError>;
@@ -102,11 +102,11 @@ pub trait ShardConsumerFactory: Send + Sync {
 /// so the in-process (non-sidecar) path keeps the simple sync `RecordProcessor`
 /// API. Each delivered batch is checkpointed at its last sequence number.
 pub struct SyncConsumerFactory {
-    inner: std::sync::Arc<dyn ddbstreams_kcl_core::RecordProcessorFactory>,
+    inner: std::sync::Arc<dyn amazon_dynamodb_streams_consumer_core::RecordProcessorFactory>,
 }
 
 impl SyncConsumerFactory {
-    pub fn new(inner: std::sync::Arc<dyn ddbstreams_kcl_core::RecordProcessorFactory>) -> Self {
+    pub fn new(inner: std::sync::Arc<dyn amazon_dynamodb_streams_consumer_core::RecordProcessorFactory>) -> Self {
         Self { inner }
     }
 }
@@ -128,7 +128,7 @@ struct SyncConsumer {
 impl AsyncShardConsumer for SyncConsumer {
     async fn deliver(
         &mut self,
-        records: &[ddbstreams_kcl_core::Record],
+        records: &[amazon_dynamodb_streams_consumer_core::Record],
     ) -> Result<Option<String>, WorkerError> {
         self.processor.process_records(records);
         Ok(records.last().map(|r| r.seq.clone()))
@@ -242,7 +242,7 @@ fn eligible(meta: &ShardMeta, completed: &HashSet<ShardId>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ddbstreams_kcl_core::Record;
+    use amazon_dynamodb_streams_consumer_core::Record;
     use std::collections::HashMap;
     use std::sync::Mutex;
 

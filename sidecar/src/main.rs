@@ -1,4 +1,4 @@
-//! `ddbstreams-kcl-sidecar` — the JVM-free consumer process a language binding
+//! `amazon-dynamodb-streams-consumer-sidecar` — the JVM-free consumer process a language binding
 //! spawns and talks to over stdio.
 //!
 //! Responsibilities: run the full Rust KCL consumer (shard discovery, DynamoDB
@@ -8,21 +8,21 @@
 //! goes to **stderr** so it never corrupts the protocol channel.
 //!
 //! Config (environment):
-//!   DDBSTREAMS_KCL_STREAM_ARN      (required) DynamoDB Streams ARN
-//!   DDBSTREAMS_KCL_LEASE_TABLE     (required) DynamoDB lease table name
-//!   DDBSTREAMS_KCL_OWNER           lease owner id (default `<host>:<pid>`)
-//!   DDBSTREAMS_KCL_MAX_LEASES      max leases this worker holds (default 100)
-//!   DDBSTREAMS_KCL_LEASE_DURATION_MS   lease expiry (default 10000)
-//!   DDBSTREAMS_KCL_POLL_INTERVAL_MS    per-shard idle poll backoff (default 1000)
-//!   DDBSTREAMS_KCL_CYCLE_INTERVAL_MS   sleep between coordination cycles (default 1000)
+//!   DDB_STREAMS_CONSUMER_STREAM_ARN      (required) DynamoDB Streams ARN
+//!   DDB_STREAMS_CONSUMER_LEASE_TABLE     (required) DynamoDB lease table name
+//!   DDB_STREAMS_CONSUMER_OWNER           lease owner id (default `<host>:<pid>`)
+//!   DDB_STREAMS_CONSUMER_MAX_LEASES      max leases this worker holds (default 100)
+//!   DDB_STREAMS_CONSUMER_LEASE_DURATION_MS   lease expiry (default 10000)
+//!   DDB_STREAMS_CONSUMER_POLL_INTERVAL_MS    per-shard idle poll backoff (default 1000)
+//!   DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS   sleep between coordination cycles (default 1000)
 //!   AWS_REGION / standard AWS env  used by the SDK for creds + region
 
 mod ipc;
 
-use ddbstreams_kcl_core::coordinator::LeaseCoordinator;
-use ddbstreams_kcl_lease_dynamodb::dynamodb::DynamoDbLeaseStore;
-use ddbstreams_kcl_source_ddbstreams::aws::DdbStreamsSource;
-use ddbstreams_kcl_worker::fleet::{Fleet, FleetConfig};
+use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
+use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::DynamoDbLeaseStore;
+use amazon_dynamodb_streams_consumer_source_ddbstreams::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig};
 use ipc::{Ipc, IpcConsumerFactory};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -43,18 +43,18 @@ impl Config {
         let opt_u64 = |k: &str, d: u64| {
             std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
         };
-        let owner = std::env::var("DDBSTREAMS_KCL_OWNER").unwrap_or_else(|_| {
+        let owner = std::env::var("DDB_STREAMS_CONSUMER_OWNER").unwrap_or_else(|_| {
             let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "host".into());
             format!("{host}:{}", std::process::id())
         });
         Ok(Self {
-            stream_arn: req("DDBSTREAMS_KCL_STREAM_ARN")?,
-            lease_table: req("DDBSTREAMS_KCL_LEASE_TABLE")?,
+            stream_arn: req("DDB_STREAMS_CONSUMER_STREAM_ARN")?,
+            lease_table: req("DDB_STREAMS_CONSUMER_LEASE_TABLE")?,
             owner,
-            max_leases: opt_u64("DDBSTREAMS_KCL_MAX_LEASES", 100) as usize,
-            lease_duration_ms: opt_u64("DDBSTREAMS_KCL_LEASE_DURATION_MS", 10_000),
-            poll_interval_ms: opt_u64("DDBSTREAMS_KCL_POLL_INTERVAL_MS", 1_000),
-            cycle_interval_ms: opt_u64("DDBSTREAMS_KCL_CYCLE_INTERVAL_MS", 1_000),
+            max_leases: opt_u64("DDB_STREAMS_CONSUMER_MAX_LEASES", 100) as usize,
+            lease_duration_ms: opt_u64("DDB_STREAMS_CONSUMER_LEASE_DURATION_MS", 10_000),
+            poll_interval_ms: opt_u64("DDB_STREAMS_CONSUMER_POLL_INTERVAL_MS", 1_000),
+            cycle_interval_ms: opt_u64("DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS", 1_000),
         })
     }
 }
@@ -151,13 +151,13 @@ mod tests {
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     const VARS: &[&str] = &[
-        "DDBSTREAMS_KCL_STREAM_ARN",
-        "DDBSTREAMS_KCL_LEASE_TABLE",
-        "DDBSTREAMS_KCL_OWNER",
-        "DDBSTREAMS_KCL_MAX_LEASES",
-        "DDBSTREAMS_KCL_LEASE_DURATION_MS",
-        "DDBSTREAMS_KCL_POLL_INTERVAL_MS",
-        "DDBSTREAMS_KCL_CYCLE_INTERVAL_MS",
+        "DDB_STREAMS_CONSUMER_STREAM_ARN",
+        "DDB_STREAMS_CONSUMER_LEASE_TABLE",
+        "DDB_STREAMS_CONSUMER_OWNER",
+        "DDB_STREAMS_CONSUMER_MAX_LEASES",
+        "DDB_STREAMS_CONSUMER_LEASE_DURATION_MS",
+        "DDB_STREAMS_CONSUMER_POLL_INTERVAL_MS",
+        "DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS",
         "HOSTNAME",
     ];
 
@@ -172,7 +172,7 @@ mod tests {
         let _g = ENV_LOCK.lock().unwrap();
         clear();
         assert!(Config::from_env().is_err(), "no stream arn → error");
-        std::env::set_var("DDBSTREAMS_KCL_STREAM_ARN", "arn");
+        std::env::set_var("DDB_STREAMS_CONSUMER_STREAM_ARN", "arn");
         assert!(Config::from_env().is_err(), "no lease table → error");
         clear();
     }
@@ -181,8 +181,8 @@ mod tests {
     fn defaults_and_owner_fallback() {
         let _g = ENV_LOCK.lock().unwrap();
         clear();
-        std::env::set_var("DDBSTREAMS_KCL_STREAM_ARN", "arn");
-        std::env::set_var("DDBSTREAMS_KCL_LEASE_TABLE", "leases");
+        std::env::set_var("DDB_STREAMS_CONSUMER_STREAM_ARN", "arn");
+        std::env::set_var("DDB_STREAMS_CONSUMER_LEASE_TABLE", "leases");
         std::env::set_var("HOSTNAME", "host7");
         let c = Config::from_env().unwrap();
         assert_eq!(c.max_leases, 100);
@@ -197,13 +197,13 @@ mod tests {
     fn explicit_values_are_parsed() {
         let _g = ENV_LOCK.lock().unwrap();
         clear();
-        std::env::set_var("DDBSTREAMS_KCL_STREAM_ARN", "arn");
-        std::env::set_var("DDBSTREAMS_KCL_LEASE_TABLE", "leases");
-        std::env::set_var("DDBSTREAMS_KCL_OWNER", "worker-9");
-        std::env::set_var("DDBSTREAMS_KCL_MAX_LEASES", "5");
-        std::env::set_var("DDBSTREAMS_KCL_LEASE_DURATION_MS", "3000");
-        std::env::set_var("DDBSTREAMS_KCL_POLL_INTERVAL_MS", "200");
-        std::env::set_var("DDBSTREAMS_KCL_CYCLE_INTERVAL_MS", "250");
+        std::env::set_var("DDB_STREAMS_CONSUMER_STREAM_ARN", "arn");
+        std::env::set_var("DDB_STREAMS_CONSUMER_LEASE_TABLE", "leases");
+        std::env::set_var("DDB_STREAMS_CONSUMER_OWNER", "worker-9");
+        std::env::set_var("DDB_STREAMS_CONSUMER_MAX_LEASES", "5");
+        std::env::set_var("DDB_STREAMS_CONSUMER_LEASE_DURATION_MS", "3000");
+        std::env::set_var("DDB_STREAMS_CONSUMER_POLL_INTERVAL_MS", "200");
+        std::env::set_var("DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS", "250");
         let c = Config::from_env().unwrap();
         assert_eq!(c.owner, "worker-9");
         assert_eq!(c.max_leases, 5);

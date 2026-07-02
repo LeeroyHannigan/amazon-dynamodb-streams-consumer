@@ -11,10 +11,10 @@
 //! shard is processed by exactly one task at a time, there is at most one
 //! outstanding ack per shard.
 
-use ddbstreams_kcl_core::record::StreamRecord;
-use ddbstreams_kcl_core::{Record, ShardId};
-use ddbstreams_kcl_protocol::{ClientMessage, ServerMessage};
-use ddbstreams_kcl_worker::{AsyncShardConsumer, ShardConsumerFactory, WorkerError};
+use amazon_dynamodb_streams_consumer_core::record::StreamRecord;
+use amazon_dynamodb_streams_consumer_core::{Record, ShardId};
+use amazon_dynamodb_streams_consumer_protocol::{ClientMessage, ServerMessage};
+use amazon_dynamodb_streams_consumer_worker::{AsyncShardConsumer, ShardConsumerFactory, WorkerError};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -174,7 +174,7 @@ impl AsyncShardConsumer for IpcConsumer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ddbstreams_kcl_core::record::{AttrValue, Item};
+    use amazon_dynamodb_streams_consumer_core::record::{AttrValue, Item};
 
     fn rec(shard: &str, seq: &str) -> Record {
         let mut keys = Item::new();

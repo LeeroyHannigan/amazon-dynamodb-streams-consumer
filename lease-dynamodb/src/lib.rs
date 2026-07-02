@@ -1,4 +1,4 @@
-//! DynamoDB-backed KCL-style lease coordination for ddbstreams-kcl.
+//! DynamoDB-backed KCL-style lease coordination for amazon-dynamodb-streams-consumer.
 //!
 //! The lease is the binding between a worker and a shard. Distributed workers
 //! coordinate through a DynamoDB lease table using **optimistic locking on

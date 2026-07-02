@@ -12,7 +12,7 @@
 use crate::{build_shard_graph, close_open_parents, DdbShard};
 use aws_sdk_dynamodbstreams::types::ShardIteratorType;
 use aws_sdk_dynamodbstreams::Client;
-use ddbstreams_kcl_core::{Record, RecordBatch, ShardMeta};
+use amazon_dynamodb_streams_consumer_core::{Record, RecordBatch, ShardMeta};
 use std::collections::HashMap;
 use std::sync::Mutex;
 

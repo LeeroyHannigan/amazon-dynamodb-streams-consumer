@@ -1,11 +1,11 @@
 //! DynamoDB Streams payload for `core::Record.data`.
 //!
 //! The typed model ([`AttrValue`], [`Item`], [`StreamRecord`]) now lives in
-//! `ddbstreams-kcl-core` so the DDB source and the binding/wire layer share one
+//! `amazon-dynamodb-streams-consumer-core` so the DDB source and the binding/wire layer share one
 //! type. This module re-exports it and adds the `aws-sdk-dynamodbstreams` →
 //! [`StreamRecord`] converter behind the `aws` feature (it needs the SDK types).
 
-pub use ddbstreams_kcl_core::record::{AttrValue, Item, StreamRecord};
+pub use amazon_dynamodb_streams_consumer_core::record::{AttrValue, Item, StreamRecord};
 
 #[cfg(feature = "aws")]
 pub use from_sdk::from_sdk;

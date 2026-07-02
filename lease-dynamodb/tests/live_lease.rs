@@ -1,26 +1,26 @@
 #![cfg(feature = "aws")]
 //! Live integration test for the DynamoDB lease store. Skipped unless
-//! `DDBSTREAMS_KCL_IT=1`. Proves the optimistic-lock cycle against real DynamoDB:
+//! `DDB_STREAMS_CONSUMER_IT=1`. Proves the optimistic-lock cycle against real DynamoDB:
 //! acquire → renew → checkpoint, and that a stale-counter renew is rejected
 //! (`LeaseError::Lost`). Creates and deletes its own lease table.
 //!
 //! Run:
-//!   DDBSTREAMS_KCL_IT=1 cargo test -p ddbstreams-kcl-lease-dynamodb \
+//!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-lease-dynamodb \
 //!     --features aws --test live_lease -- --nocapture
 
 use aws_sdk_dynamodb as ddb;
-use ddbstreams_kcl_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
+use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
 
 #[tokio::test]
 async fn live_optimistic_lock_lease_cycle() {
-    if std::env::var("DDBSTREAMS_KCL_IT").is_err() {
-        eprintln!("skipping live lease integ test (set DDBSTREAMS_KCL_IT=1 to run)");
+    if std::env::var("DDB_STREAMS_CONSUMER_IT").is_err() {
+        eprintln!("skipping live lease integ test (set DDB_STREAMS_CONSUMER_IT=1 to run)");
         return;
     }
 
     let cfg = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let client = ddb::Client::new(&cfg);
-    let table = format!("ddbstreams-kcl-leases-it-{}", std::process::id());
+    let table = format!("amazon-dynamodb-streams-consumer-leases-it-{}", std::process::id());
 
     let store = DynamoDbLeaseStore::new(client.clone(), &table);
     store.ensure_table().await.expect("ensure_table");

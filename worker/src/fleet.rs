@@ -11,8 +11,8 @@
 //! of the pure primitives in `core`.
 
 use crate::{eligible, AsyncLeaseStore, AsyncShardConsumer, AsyncStreamSource, ShardConsumerFactory, WorkerError};
-use ddbstreams_kcl_core::coordinator::LeaseCoordinator;
-use ddbstreams_kcl_core::ShardId;
+use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
+use amazon_dynamodb_streams_consumer_core::ShardId;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
@@ -226,8 +226,8 @@ where
 mod tests {
     use super::*;
     use crate::{AsyncShardConsumer, LeaseHandle, LeaseView, ShardConsumerFactory, SyncConsumerFactory};
-    use ddbstreams_kcl_core::coordinator::RawLease;
-    use ddbstreams_kcl_core::{Record, RecordBatch, RecordProcessor, RecordProcessorFactory, ShardMeta};
+    use amazon_dynamodb_streams_consumer_core::coordinator::RawLease;
+    use amazon_dynamodb_streams_consumer_core::{Record, RecordBatch, RecordProcessor, RecordProcessorFactory, ShardMeta};
     use std::collections::HashMap;
     use std::sync::Mutex;
 

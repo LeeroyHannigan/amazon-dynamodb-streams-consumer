@@ -7,11 +7,11 @@
 //! shards, and one concurrent task per owned shard delivers records in order and
 //! checkpoints under the optimistic lock.
 //!
-//! Skipped unless `DDBSTREAMS_KCL_IT=1`. Creates + deletes its own data table
+//! Skipped unless `DDB_STREAMS_CONSUMER_IT=1`. Creates + deletes its own data table
 //! and lease table.
 //!
 //! Run:
-//!   DDBSTREAMS_KCL_IT=1 AWS_REGION=us-east-1 cargo test -p ddbstreams-kcl-worker \
+//!   DDB_STREAMS_CONSUMER_IT=1 AWS_REGION=us-east-1 cargo test -p amazon-dynamodb-streams-consumer-worker \
 //!     --features aws --test live_fleet -- --nocapture
 
 use aws_sdk_dynamodb as ddb;
@@ -20,11 +20,11 @@ use ddb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType, StreamSpecification, StreamViewType, TableStatus,
 };
-use ddbstreams_kcl_core::coordinator::LeaseCoordinator;
-use ddbstreams_kcl_core::{Record, RecordProcessor, RecordProcessorFactory, ShardId};
-use ddbstreams_kcl_lease_dynamodb::dynamodb::DynamoDbLeaseStore;
-use ddbstreams_kcl_source_ddbstreams::aws::DdbStreamsSource;
-use ddbstreams_kcl_worker::fleet::{Fleet, FleetConfig};
+use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
+use amazon_dynamodb_streams_consumer_core::{Record, RecordProcessor, RecordProcessorFactory, ShardId};
+use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::DynamoDbLeaseStore;
+use amazon_dynamodb_streams_consumer_source_ddbstreams::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -65,8 +65,8 @@ fn seq_ord(a: &str, b: &str) -> std::cmp::Ordering {
 
 #[tokio::test]
 async fn live_fleet_consumes_and_checkpoints() {
-    if std::env::var("DDBSTREAMS_KCL_IT").is_err() {
-        eprintln!("skipping live fleet integ test (set DDBSTREAMS_KCL_IT=1 to run)");
+    if std::env::var("DDB_STREAMS_CONSUMER_IT").is_err() {
+        eprintln!("skipping live fleet integ test (set DDB_STREAMS_CONSUMER_IT=1 to run)");
         return;
     }
 
@@ -75,8 +75,8 @@ async fn live_fleet_consumes_and_checkpoints() {
     let st = streams::Client::new(&cfg);
 
     let pid = std::process::id();
-    let data_table = format!("ddbstreams-kcl-fleet-it-{pid}");
-    let lease_table = format!("ddbstreams-kcl-fleet-leases-it-{pid}");
+    let data_table = format!("amazon-dynamodb-streams-consumer-fleet-it-{pid}");
+    let lease_table = format!("amazon-dynamodb-streams-consumer-fleet-leases-it-{pid}");
 
     db.create_table()
         .table_name(&data_table)
@@ -184,7 +184,7 @@ async fn run_fleet(
     let fleet = Fleet::new(
         source,
         leases,
-        Arc::new(ddbstreams_kcl_worker::SyncConsumerFactory::new(factory)),
+        Arc::new(amazon_dynamodb_streams_consumer_worker::SyncConsumerFactory::new(factory)),
         FleetConfig {
             owner: "fleet-w1".into(),
             max_leases: 100,

@@ -1,10 +1,10 @@
-//! ddbstreams-kcl-core — shared Rust engine for a multi-language, JVM-free
+//! amazon-dynamodb-streams-consumer-core — shared Rust engine for a multi-language, JVM-free
 //! DynamoDB Streams KCL.
 //!
 //! This crate owns the correctness-critical logic that is IDENTICAL regardless
 //! of how languages attach on top (daemon+IPC "Architecture A" or FFI "B"):
 //!   * shard graph consumption (lineage from DescribeStream, built in
-//!     `ddbstreams-kcl-source-ddbstreams`)
+//!     `amazon-dynamodb-streams-consumer-source-ddbstreams`)
 //!   * ORDERING: single-owner-per-shard (in-sequence) + parent-before-child
 //!   * checkpointing
 //!

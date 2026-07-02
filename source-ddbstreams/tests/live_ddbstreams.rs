@@ -1,14 +1,14 @@
 #![cfg(feature = "aws")]
 //! Live integration test against real DynamoDB Streams.
 //!
-//! Skipped unless `DDBSTREAMS_KCL_IT=1` so ordinary `cargo test` stays offline.
+//! Skipped unless `DDB_STREAMS_CONSUMER_IT=1` so ordinary `cargo test` stays offline.
 //! It creates a temporary `PAY_PER_REQUEST` table with `NEW_AND_OLD_IMAGES`
 //! streams, writes ordered items, reads them back through `DdbStreamsSource`,
 //! asserts the adapter surfaces the shard graph and records, then deletes the
 //! table (best-effort cleanup).
 //!
 //! Run:
-//!   DDBSTREAMS_KCL_IT=1 cargo test -p ddbstreams-kcl-source-ddbstreams \
+//!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-source-ddbstreams \
 //!     --features aws --test live_ddbstreams -- --nocapture
 
 use aws_sdk_dynamodb as ddb;
@@ -17,13 +17,13 @@ use ddb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType, StreamSpecification, StreamViewType, TableStatus,
 };
-use ddbstreams_kcl_source_ddbstreams::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_source_ddbstreams::aws::DdbStreamsSource;
 use std::time::Duration;
 
 #[tokio::test]
 async fn live_read_ordered_records() {
-    if std::env::var("DDBSTREAMS_KCL_IT").is_err() {
-        eprintln!("skipping live integ test (set DDBSTREAMS_KCL_IT=1 to run)");
+    if std::env::var("DDB_STREAMS_CONSUMER_IT").is_err() {
+        eprintln!("skipping live integ test (set DDB_STREAMS_CONSUMER_IT=1 to run)");
         return;
     }
 
@@ -31,7 +31,7 @@ async fn live_read_ordered_records() {
     let db = ddb::Client::new(&cfg);
     let st = streams::Client::new(&cfg);
 
-    let table = format!("ddbstreams-kcl-it-{}", std::process::id());
+    let table = format!("amazon-dynamodb-streams-consumer-it-{}", std::process::id());
     eprintln!("creating temp table {table}");
 
     db.create_table()
@@ -99,7 +99,7 @@ async fn live_read_ordered_records() {
 /// Discover shards via the adapter and drain records from the root shard(s),
 /// retrying because stream records lag writes by a moment.
 async fn run_read(source: &DdbStreamsSource) -> Result<(usize, bool), Box<dyn std::error::Error + Send + Sync>> {
-    use ddbstreams_kcl_source_ddbstreams::record::StreamRecord;
+    use amazon_dynamodb_streams_consumer_source_ddbstreams::record::StreamRecord;
     // Retry describe until at least one shard shows up.
     let mut shards = Vec::new();
     for _ in 0..15 {

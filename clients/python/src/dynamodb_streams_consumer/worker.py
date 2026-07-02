@@ -1,9 +1,9 @@
-"""The customer-facing entry point: spawn the ddbstreams-kcl sidecar and deliver
+"""The customer-facing entry point: spawn the amazon-dynamodb-streams-consumer sidecar and deliver
 ordered, checkpointed change records to a processor.
 
 Example::
 
-    from ddbstreams_kcl import Worker
+    from dynamodb_streams_consumer import Worker
 
     class MyProcessor:
         def process_records(self, records):
@@ -34,7 +34,7 @@ from typing import List, Optional, Protocol, Sequence
 
 from .record import Record
 
-DEFAULT_BINARY = "ddbstreams-kcl-sidecar"
+DEFAULT_BINARY = "amazon-dynamodb-streams-consumer-sidecar"
 
 
 class RecordProcessor(Protocol):
@@ -42,7 +42,7 @@ class RecordProcessor(Protocol):
 
 
 def _discover_sidecar() -> str:
-    env = os.environ.get("DDBSTREAMS_KCL_SIDECAR")
+    env = os.environ.get("DDB_STREAMS_CONSUMER_SIDECAR")
     if env:
         return env
     found = shutil.which(DEFAULT_BINARY)
@@ -50,7 +50,7 @@ def _discover_sidecar() -> str:
         return found
     raise FileNotFoundError(
         f"could not find the '{DEFAULT_BINARY}' sidecar binary. Put it on PATH, "
-        "set DDBSTREAMS_KCL_SIDECAR=/path/to/sidecar, or pass sidecar_path=..."
+        "set DDB_STREAMS_CONSUMER_SIDECAR=/path/to/sidecar, or pass sidecar_path=..."
     )
 
 
@@ -87,17 +87,17 @@ class Worker:
 
     def _env(self) -> dict:
         env = dict(os.environ)
-        env["DDBSTREAMS_KCL_STREAM_ARN"] = self.stream_arn
-        env["DDBSTREAMS_KCL_LEASE_TABLE"] = self.lease_table
+        env["DDB_STREAMS_CONSUMER_STREAM_ARN"] = self.stream_arn
+        env["DDB_STREAMS_CONSUMER_LEASE_TABLE"] = self.lease_table
         if self.owner:
-            env["DDBSTREAMS_KCL_OWNER"] = self.owner
+            env["DDB_STREAMS_CONSUMER_OWNER"] = self.owner
         if self.region:
             env["AWS_REGION"] = self.region
         for key, val in [
-            ("DDBSTREAMS_KCL_MAX_LEASES", self.max_leases),
-            ("DDBSTREAMS_KCL_LEASE_DURATION_MS", self.lease_duration_ms),
-            ("DDBSTREAMS_KCL_POLL_INTERVAL_MS", self.poll_interval_ms),
-            ("DDBSTREAMS_KCL_CYCLE_INTERVAL_MS", self.cycle_interval_ms),
+            ("DDB_STREAMS_CONSUMER_MAX_LEASES", self.max_leases),
+            ("DDB_STREAMS_CONSUMER_LEASE_DURATION_MS", self.lease_duration_ms),
+            ("DDB_STREAMS_CONSUMER_POLL_INTERVAL_MS", self.poll_interval_ms),
+            ("DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS", self.cycle_interval_ms),
         ]:
             if val is not None:
                 env[key] = str(val)

@@ -1,4 +1,4 @@
-//! Wire protocol between the `ddbstreams-kcl` **sidecar** (the Rust consumer
+//! Wire protocol between the `amazon-dynamodb-streams-consumer` **sidecar** (the Rust consumer
 //! process) and a **language binding** (the thin client library embedded in the
 //! customer's app). This is the JVM-free analog of KCL's MultiLangDaemon
 //! protocol: the sidecar owns all coordination (shard discovery, leases,
@@ -20,7 +20,7 @@
 //! before acking, the lease is not advanced and another worker re-delivers from
 //! the last committed checkpoint — at-least-once, exactly like KCL.
 
-use ddbstreams_kcl_core::record::StreamRecord;
+use amazon_dynamodb_streams_consumer_core::record::StreamRecord;
 use serde::{Deserialize, Serialize};
 
 /// Messages the **sidecar → client** (records to process, lifecycle signals).
@@ -94,7 +94,7 @@ impl ClientMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ddbstreams_kcl_core::record::{AttrValue, Item};
+    use amazon_dynamodb_streams_consumer_core::record::{AttrValue, Item};
 
     fn sample_record(seq: &str) -> StreamRecord {
         let mut keys = Item::new();

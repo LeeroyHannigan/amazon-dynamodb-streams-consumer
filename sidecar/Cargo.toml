@@ -1,19 +1,19 @@
 [package]
-name = "ddbstreams-kcl-sidecar"
+name = "amazon-dynamodb-streams-consumer-sidecar"
 version = "0.0.1"
 edition = "2021"
-description = "JVM-free language-binding sidecar for ddbstreams-kcl. Runs the full Rust consumer (shard discovery, leases, ordering, checkpoints) and streams ordered record batches to a thin language client over stdio using the JSON-Lines protocol; the client acks with a checkpoint. The MultiLangDaemon analog, without a JVM."
+description = "JVM-free language-binding sidecar for amazon-dynamodb-streams-consumer. Runs the full Rust consumer (shard discovery, leases, ordering, checkpoints) and streams ordered record batches to a thin language client over stdio using the JSON-Lines protocol; the client acks with a checkpoint. The MultiLangDaemon analog, without a JVM."
 
 [[bin]]
-name = "ddbstreams-kcl-sidecar"
+name = "amazon-dynamodb-streams-consumer-sidecar"
 path = "src/main.rs"
 
 [dependencies]
-ddbstreams-kcl-core = { path = "../core" }
-ddbstreams-kcl-protocol = { path = "../protocol" }
-ddbstreams-kcl-source-ddbstreams = { path = "../source-ddbstreams", features = ["aws"] }
-ddbstreams-kcl-lease-dynamodb = { path = "../lease-dynamodb", features = ["aws"] }
-ddbstreams-kcl-worker = { path = "../worker", features = ["aws"] }
+amazon-dynamodb-streams-consumer-core = { path = "../core" }
+amazon-dynamodb-streams-consumer-protocol = { path = "../protocol" }
+amazon-dynamodb-streams-consumer-source-ddbstreams = { path = "../source-ddbstreams", features = ["aws"] }
+amazon-dynamodb-streams-consumer-lease-dynamodb = { path = "../lease-dynamodb", features = ["aws"] }
+amazon-dynamodb-streams-consumer-worker = { path = "../worker", features = ["aws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "time"] }
 async-trait = "0.1"
 

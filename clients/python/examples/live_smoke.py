@@ -4,7 +4,7 @@ DynamoDB stream. Collects records until a target count (or timeout), then stops
 gracefully. Prints ``PYCLIENT_OK <count> <shards>`` on success.
 
 Usage:
-  DDBSTREAMS_KCL_SIDECAR=/path/to/ddbstreams-kcl-sidecar \\
+  DDB_STREAMS_CONSUMER_SIDECAR=/path/to/amazon-dynamodb-streams-consumer-sidecar \\
   python3 live_smoke.py <stream_arn> <lease_table> <region> [target=5] [timeout=60]
 """
 
@@ -14,7 +14,7 @@ import time
 
 sys.path.insert(0, __file__.rsplit("/examples/", 1)[0] + "/src")
 
-from ddbstreams_kcl import Worker  # noqa: E402
+from dynamodb_streams_consumer import Worker  # noqa: E402
 
 
 class Collector:

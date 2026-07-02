@@ -2,9 +2,9 @@
 //! `DdbStreamsSource` and `DynamoDbLeaseStore`. Behind the `aws` feature.
 
 use crate::{AsyncLeaseStore, AsyncStreamSource, LeaseHandle, LeaseView, WorkerError};
-use ddbstreams_kcl_core::{RecordBatch, ShardMeta};
-use ddbstreams_kcl_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
-use ddbstreams_kcl_source_ddbstreams::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_core::{RecordBatch, ShardMeta};
+use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
+use amazon_dynamodb_streams_consumer_source_ddbstreams::aws::DdbStreamsSource;
 
 #[async_trait::async_trait]
 impl AsyncStreamSource for DdbStreamsSource {
@@ -27,11 +27,11 @@ impl AsyncLeaseStore for DynamoDbLeaseStore {
             .await?
             .map(|l| LeaseView { completed: l.completed }))
     }
-    async fn list(&self) -> Result<Vec<ddbstreams_kcl_core::coordinator::RawLease>, WorkerError> {
+    async fn list(&self) -> Result<Vec<amazon_dynamodb_streams_consumer_core::coordinator::RawLease>, WorkerError> {
         Ok(DynamoDbLeaseStore::list_all(self)
             .await?
             .into_iter()
-            .map(|l| ddbstreams_kcl_core::coordinator::RawLease {
+            .map(|l| amazon_dynamodb_streams_consumer_core::coordinator::RawLease {
                 lease_key: l.lease_key,
                 owner: l.lease_owner,
                 lease_counter: l.lease_counter,

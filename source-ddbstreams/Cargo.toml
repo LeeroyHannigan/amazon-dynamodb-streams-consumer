@@ -1,8 +1,8 @@
 [package]
-name = "ddbstreams-kcl-source-ddbstreams"
+name = "amazon-dynamodb-streams-consumer-source-ddbstreams"
 version = "0.0.1"
 edition = "2021"
-description = "DynamoDB Streams StreamSource for ddbstreams-kcl-core. Pure DescribeStream shard-graph logic (always built); the async aws-sdk-dynamodbstreams adapter is behind the optional `aws` feature."
+description = "DynamoDB Streams StreamSource for amazon-dynamodb-streams-consumer-core. Pure DescribeStream shard-graph logic (always built); the async aws-sdk-dynamodbstreams adapter is behind the optional `aws` feature."
 
 [features]
 # Enables the live async adapter over aws-sdk-dynamodbstreams. Off by default so
@@ -10,7 +10,7 @@ description = "DynamoDB Streams StreamSource for ddbstreams-kcl-core. Pure Descr
 aws = ["dep:aws-config", "dep:aws-sdk-dynamodbstreams", "dep:tokio"]
 
 [dependencies]
-ddbstreams-kcl-core = { path = "../core" }
+amazon-dynamodb-streams-consumer-core = { path = "../core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 aws-config = { version = "1", optional = true }
@@ -18,7 +18,7 @@ aws-sdk-dynamodbstreams = { version = "1", optional = true }
 tokio = { version = "1", optional = true, features = ["rt-multi-thread", "macros"] }
 
 # For the live integration test (tests/live_ddbstreams.rs, gated by the `aws`
-# feature + DDBSTREAMS_KCL_IT=1). Control-plane client to create/seed/delete a
+# feature + DDB_STREAMS_CONSUMER_IT=1). Control-plane client to create/seed/delete a
 # temporary streamed table.
 [dev-dependencies]
 aws-config = { version = "1" }

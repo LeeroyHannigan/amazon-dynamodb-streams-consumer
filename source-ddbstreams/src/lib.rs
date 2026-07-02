@@ -1,4 +1,4 @@
-//! DynamoDB Streams `StreamSource` support for `ddbstreams-kcl-core`.
+//! DynamoDB Streams `StreamSource` support for `amazon-dynamodb-streams-consumer-core`.
 //!
 //! This module contains the correctness-critical, network-free logic:
 //! turning `DescribeStream` results into the shard lineage the core engine
@@ -9,7 +9,7 @@
 //! Grounded in `DynamoDBStreamsShardDetector` / `DynamoDBStreamsShardSyncer`
 //! (awslabs/dynamodb-streams-kinesis-adapter, Apache-2.0). See core/REFERENCES.md.
 
-use ddbstreams_kcl_core::{ShardId, ShardMeta};
+use amazon_dynamodb_streams_consumer_core::{ShardId, ShardMeta};
 use std::collections::HashSet;
 
 #[cfg(feature = "aws")]

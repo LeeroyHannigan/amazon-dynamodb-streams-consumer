@@ -2,11 +2,11 @@
 //! End-to-end live integration test: the `Worker` composes a real
 //! `DdbStreamsSource` + `DynamoDbLeaseStore` + a recording processor and
 //! consumes a real DynamoDB stream, acquiring a lease and checkpointing in
-//! DynamoDB. Skipped unless `DDBSTREAMS_KCL_IT=1`. Creates + deletes its own
+//! DynamoDB. Skipped unless `DDB_STREAMS_CONSUMER_IT=1`. Creates + deletes its own
 //! data table and lease table.
 //!
 //! Run:
-//!   DDBSTREAMS_KCL_IT=1 cargo test -p ddbstreams-kcl-worker \
+//!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-worker \
 //!     --features aws --test live_worker -- --nocapture
 
 use aws_sdk_dynamodb as ddb;
@@ -15,10 +15,10 @@ use ddb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType, StreamSpecification, StreamViewType, TableStatus,
 };
-use ddbstreams_kcl_core::{Record, RecordProcessor, ShardId};
-use ddbstreams_kcl_lease_dynamodb::dynamodb::DynamoDbLeaseStore;
-use ddbstreams_kcl_source_ddbstreams::aws::DdbStreamsSource;
-use ddbstreams_kcl_worker::Worker;
+use amazon_dynamodb_streams_consumer_core::{Record, RecordProcessor, ShardId};
+use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::DynamoDbLeaseStore;
+use amazon_dynamodb_streams_consumer_source_ddbstreams::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_worker::Worker;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -47,8 +47,8 @@ fn seq_lt(a: &str, b: &str) -> std::cmp::Ordering {
 
 #[tokio::test]
 async fn live_worker_consumes_and_checkpoints() {
-    if std::env::var("DDBSTREAMS_KCL_IT").is_err() {
-        eprintln!("skipping live worker integ test (set DDBSTREAMS_KCL_IT=1 to run)");
+    if std::env::var("DDB_STREAMS_CONSUMER_IT").is_err() {
+        eprintln!("skipping live worker integ test (set DDB_STREAMS_CONSUMER_IT=1 to run)");
         return;
     }
 
@@ -57,8 +57,8 @@ async fn live_worker_consumes_and_checkpoints() {
     let st = streams::Client::new(&cfg);
 
     let pid = std::process::id();
-    let data_table = format!("ddbstreams-kcl-worker-it-{pid}");
-    let lease_table = format!("ddbstreams-kcl-worker-leases-it-{pid}");
+    let data_table = format!("amazon-dynamodb-streams-consumer-worker-it-{pid}");
+    let lease_table = format!("amazon-dynamodb-streams-consumer-worker-leases-it-{pid}");
 
     db.create_table()
         .table_name(&data_table)

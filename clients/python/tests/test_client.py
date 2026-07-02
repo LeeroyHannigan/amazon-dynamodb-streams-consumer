@@ -7,8 +7,8 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from ddbstreams_kcl import Record, Worker, decode_attr  # noqa: E402
-from ddbstreams_kcl.record import decode_item  # noqa: E402
+from dynamodb_streams_consumer import Record, Worker, decode_attr  # noqa: E402
+from dynamodb_streams_consumer.record import decode_item  # noqa: E402
 
 FAKE = os.path.join(os.path.dirname(__file__), "fake_sidecar.py")
 
@@ -118,20 +118,20 @@ class TestWorkerEdgeCases(unittest.TestCase):
             sidecar_cmd=["true"],
         )
         env = w._env()
-        self.assertEqual(env["DDBSTREAMS_KCL_STREAM_ARN"], "the-arn")
-        self.assertEqual(env["DDBSTREAMS_KCL_LEASE_TABLE"], "the-table")
-        self.assertEqual(env["DDBSTREAMS_KCL_OWNER"], "own")
+        self.assertEqual(env["DDB_STREAMS_CONSUMER_STREAM_ARN"], "the-arn")
+        self.assertEqual(env["DDB_STREAMS_CONSUMER_LEASE_TABLE"], "the-table")
+        self.assertEqual(env["DDB_STREAMS_CONSUMER_OWNER"], "own")
         self.assertEqual(env["AWS_REGION"], "eu-west-1")
-        self.assertEqual(env["DDBSTREAMS_KCL_MAX_LEASES"], "7")
-        self.assertEqual(env["DDBSTREAMS_KCL_LEASE_DURATION_MS"], "1234")
-        self.assertEqual(env["DDBSTREAMS_KCL_POLL_INTERVAL_MS"], "55")
-        self.assertEqual(env["DDBSTREAMS_KCL_CYCLE_INTERVAL_MS"], "66")
+        self.assertEqual(env["DDB_STREAMS_CONSUMER_MAX_LEASES"], "7")
+        self.assertEqual(env["DDB_STREAMS_CONSUMER_LEASE_DURATION_MS"], "1234")
+        self.assertEqual(env["DDB_STREAMS_CONSUMER_POLL_INTERVAL_MS"], "55")
+        self.assertEqual(env["DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS"], "66")
 
     def test_missing_sidecar_binary_raises(self):
         import os as _os
-        from ddbstreams_kcl import worker as worker_mod
+        from dynamodb_streams_consumer import worker as worker_mod
 
-        saved = _os.environ.pop("DDBSTREAMS_KCL_SIDECAR", None)
+        saved = _os.environ.pop("DDB_STREAMS_CONSUMER_SIDECAR", None)
         saved_path = _os.environ.get("PATH")
         try:
             _os.environ["PATH"] = ""  # nothing discoverable
@@ -139,7 +139,7 @@ class TestWorkerEdgeCases(unittest.TestCase):
                 worker_mod._discover_sidecar()
         finally:
             if saved is not None:
-                _os.environ["DDBSTREAMS_KCL_SIDECAR"] = saved
+                _os.environ["DDB_STREAMS_CONSUMER_SIDECAR"] = saved
             if saved_path is not None:
                 _os.environ["PATH"] = saved_path
 

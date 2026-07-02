@@ -1,4 +1,4 @@
-"""ddbstreams-kcl: a JVM-free DynamoDB Streams KCL consumer for Python.
+"""amazon-dynamodb-streams-consumer: a JVM-free DynamoDB Streams KCL consumer for Python.
 
 The Rust sidecar owns shard discovery, DynamoDB leases, ordering and
 checkpoints; this package spawns it and delivers ordered, checkpointed change

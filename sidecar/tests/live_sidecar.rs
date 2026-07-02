@@ -1,14 +1,14 @@
 //! End-to-end live test of the **sidecar binary** exactly as a language client
 //! would drive it: create a real streamed table, spawn the compiled
-//! `ddbstreams-kcl-sidecar` process, act as the client over its stdio (read
+//! `amazon-dynamodb-streams-consumer-sidecar` process, act as the client over its stdio (read
 //! `records`, reply with `checkpoint` acks), and assert the real change records
 //! flow through with their typed payloads. Verifies the ack advances the
 //! persisted checkpoint, then stops the sidecar and cleans up both tables.
 //!
-//! Skipped unless `DDBSTREAMS_KCL_IT=1`.
+//! Skipped unless `DDB_STREAMS_CONSUMER_IT=1`.
 //!
 //! Run:
-//!   DDBSTREAMS_KCL_IT=1 AWS_REGION=us-east-1 cargo test -p ddbstreams-kcl-sidecar \
+//!   DDB_STREAMS_CONSUMER_IT=1 AWS_REGION=us-east-1 cargo test -p amazon-dynamodb-streams-consumer-sidecar \
 //!     --test live_sidecar -- --nocapture
 
 use aws_sdk_dynamodb as ddb;
@@ -16,7 +16,7 @@ use ddb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType, StreamSpecification, StreamViewType, TableStatus,
 };
-use ddbstreams_kcl_protocol::{ClientMessage, ServerMessage};
+use amazon_dynamodb_streams_consumer_protocol::{ClientMessage, ServerMessage};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -24,8 +24,8 @@ use tokio::process::Command;
 
 #[tokio::test]
 async fn live_sidecar_streams_records_and_checkpoints() {
-    if std::env::var("DDBSTREAMS_KCL_IT").is_err() {
-        eprintln!("skipping live sidecar integ test (set DDBSTREAMS_KCL_IT=1 to run)");
+    if std::env::var("DDB_STREAMS_CONSUMER_IT").is_err() {
+        eprintln!("skipping live sidecar integ test (set DDB_STREAMS_CONSUMER_IT=1 to run)");
         return;
     }
     let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".into());
@@ -33,8 +33,8 @@ async fn live_sidecar_streams_records_and_checkpoints() {
     let db = ddb::Client::new(&cfg);
 
     let pid = std::process::id();
-    let data_table = format!("ddbstreams-kcl-sidecar-it-{pid}");
-    let lease_table = format!("ddbstreams-kcl-sidecar-leases-it-{pid}");
+    let data_table = format!("amazon-dynamodb-streams-consumer-sidecar-it-{pid}");
+    let lease_table = format!("amazon-dynamodb-streams-consumer-sidecar-leases-it-{pid}");
 
     db.create_table()
         .table_name(&data_table)
@@ -98,13 +98,13 @@ async fn run_client(
     region: &str,
 ) -> Result<(usize, usize, usize), Box<dyn std::error::Error + Send + Sync>> {
     // Cargo provides the built binary path to integration tests.
-    let bin = env!("CARGO_BIN_EXE_ddbstreams-kcl-sidecar");
+    let bin = env!("CARGO_BIN_EXE_amazon-dynamodb-streams-consumer-sidecar");
     let mut child = Command::new(bin)
-        .env("DDBSTREAMS_KCL_STREAM_ARN", stream_arn)
-        .env("DDBSTREAMS_KCL_LEASE_TABLE", lease_table)
-        .env("DDBSTREAMS_KCL_OWNER", "sidecar-it")
-        .env("DDBSTREAMS_KCL_LEASE_DURATION_MS", "60000")
-        .env("DDBSTREAMS_KCL_CYCLE_INTERVAL_MS", "500")
+        .env("DDB_STREAMS_CONSUMER_STREAM_ARN", stream_arn)
+        .env("DDB_STREAMS_CONSUMER_LEASE_TABLE", lease_table)
+        .env("DDB_STREAMS_CONSUMER_OWNER", "sidecar-it")
+        .env("DDB_STREAMS_CONSUMER_LEASE_DURATION_MS", "60000")
+        .env("DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS", "500")
         .env("AWS_REGION", region)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
