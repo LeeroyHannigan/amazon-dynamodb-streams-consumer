@@ -6,4 +6,5 @@ members = [
     "lease-dynamodb",
     "worker",
     "protocol",
+    "sidecar",
 ]
