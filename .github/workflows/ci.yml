@@ -64,21 +64,34 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
 
-      # Live integration tests require AWS. They run only when a role is
-      # configured (repo variable AWS_ROLE_ARN) AND this is not a fork PR — forks
-      # receive neither an OIDC token nor secrets. Otherwise coverage runs
-      # offline (the AWS-adapter files then report low coverage, which is
-      # expected).
+      # Live integration tests require AWS. They run only when the AWS_ROLE_ARN
+      # secret is set AND this is not a fork PR — forks receive neither the
+      # secret nor an OIDC token. Otherwise coverage runs offline (the
+      # AWS-adapter files then report low coverage, which is expected).
+      # A secret (not a variable) keeps the account ID out of the public repo;
+      # secrets can't be used in `if:`, so this step converts its presence to an
+      # output the next step can gate on.
+      - name: Check AWS config
+        id: awscfg
+        env:
+          ROLE: ${{ secrets.AWS_ROLE_ARN }}
+        run: |
+          enabled=false
+          if [ -n "$ROLE" ]; then
+            if [ "${{ github.event_name }}" != "pull_request" ] \
+               || [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+              enabled=true
+            fi
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+
       - name: Configure AWS credentials (OIDC)
         id: aws
-        if: >-
-          ${{ vars.AWS_ROLE_ARN != ''
-          && (github.event_name != 'pull_request'
-          || github.event.pull_request.head.repo.full_name == github.repository) }}
+        if: steps.awscfg.outputs.enabled == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
 
       - name: Run coverage
         run: |
