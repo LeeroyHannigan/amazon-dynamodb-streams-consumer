@@ -85,6 +85,63 @@ class TestWorkerAgainstFakeSidecar(unittest.TestCase):
         self.assertEqual(proc.records[0].keys, {"pk": "k1"})
         self.assertEqual(proc.records[0].new_image, {"pk": "k1", "active": True, "n": "42"})
         self.assertEqual(proc.records[2].shard_id, "s1")
+        # shard_complete over the wire invoked the optional shard_ended callback,
+        # and the malformed line between batches was ignored (no crash, all acks).
+        self.assertEqual(proc.ended, ["s1"])
+
+
+class _MinimalProcessor:
+    """Only process_records — no shard_ended. Must not crash on shard_complete."""
+
+    def __init__(self):
+        self.count = 0
+
+    def process_records(self, records):
+        self.count += len(records)
+
+
+class TestWorkerEdgeCases(unittest.TestCase):
+    def test_processor_without_shard_ended_is_fine(self):
+        proc = _MinimalProcessor()
+        exit_code = Worker(
+            stream_arn="arn", lease_table="l", processor=proc,
+            sidecar_cmd=[sys.executable, FAKE],
+        ).run()
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(proc.count, 3)
+
+    def test_env_maps_all_config(self):
+        w = Worker(
+            stream_arn="the-arn", lease_table="the-table", processor=_MinimalProcessor(),
+            owner="own", region="eu-west-1", max_leases=7,
+            lease_duration_ms=1234, poll_interval_ms=55, cycle_interval_ms=66,
+            sidecar_cmd=["true"],
+        )
+        env = w._env()
+        self.assertEqual(env["DDBSTREAMS_KCL_STREAM_ARN"], "the-arn")
+        self.assertEqual(env["DDBSTREAMS_KCL_LEASE_TABLE"], "the-table")
+        self.assertEqual(env["DDBSTREAMS_KCL_OWNER"], "own")
+        self.assertEqual(env["AWS_REGION"], "eu-west-1")
+        self.assertEqual(env["DDBSTREAMS_KCL_MAX_LEASES"], "7")
+        self.assertEqual(env["DDBSTREAMS_KCL_LEASE_DURATION_MS"], "1234")
+        self.assertEqual(env["DDBSTREAMS_KCL_POLL_INTERVAL_MS"], "55")
+        self.assertEqual(env["DDBSTREAMS_KCL_CYCLE_INTERVAL_MS"], "66")
+
+    def test_missing_sidecar_binary_raises(self):
+        import os as _os
+        from ddbstreams_kcl import worker as worker_mod
+
+        saved = _os.environ.pop("DDBSTREAMS_KCL_SIDECAR", None)
+        saved_path = _os.environ.get("PATH")
+        try:
+            _os.environ["PATH"] = ""  # nothing discoverable
+            with self.assertRaises(FileNotFoundError):
+                worker_mod._discover_sidecar()
+        finally:
+            if saved is not None:
+                _os.environ["DDBSTREAMS_KCL_SIDECAR"] = saved
+            if saved_path is not None:
+                _os.environ["PATH"] = saved_path
 
 
 if __name__ == "__main__":

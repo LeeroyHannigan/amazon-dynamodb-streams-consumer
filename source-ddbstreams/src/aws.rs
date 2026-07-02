@@ -128,7 +128,7 @@ impl DdbStreamsSource {
         let cursors = self.cursors.lock().unwrap();
         cursors
             .get(shard)
-            .filter(|c| c.after.as_deref() == after)
+            .filter(|c| cursor_continues(c.after.as_deref(), after))
             .map(|c| c.iterator.clone())
     }
 
@@ -224,13 +224,25 @@ impl DdbStreamsSource {
         // 3) Thread the next iterator. The cursor's logical position advances to
         // the last delivered seq (or stays at `after` if this poll was empty).
         let next = resp.next_shard_iterator().map(|s| s.to_string());
-        let new_after =
-            records.last().map(|r| r.seq.clone()).or_else(|| after.map(|s| s.to_string()));
+        let new_after = advanced_after(after, records.last().map(|r| r.seq.as_str()));
         self.store_cursor(shard, new_after, next.clone());
         // A closed shard yields no next iterator.
         let shard_end = next.is_none();
         Ok(RecordBatch { records, shard_end })
     }
+}
+
+/// A cached cursor continues the caller's read iff it is positioned at exactly
+/// the requested `after`. A mismatch means a reposition (or fresh/restarted
+/// process), so the threaded iterator must NOT be reused.
+fn cursor_continues(cursor_after: Option<&str>, requested: Option<&str>) -> bool {
+    cursor_after == requested
+}
+
+/// The cursor's new logical position after a poll: the last delivered seq, or
+/// the unchanged `requested` position if the poll was empty.
+fn advanced_after(requested: Option<&str>, last_seq: Option<&str>) -> Option<String> {
+    last_seq.or(requested).map(|s| s.to_string())
 }
 
 /// Trimmed-data / expired-iterator / resource-not-found are recoverable by
@@ -240,4 +252,40 @@ fn is_recoverable(e: &BoxError) -> bool {
     msg.contains("TrimmedDataAccessException")
         || msg.contains("ExpiredIteratorException")
         || msg.contains("ResourceNotFoundException")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cursor_reused_only_when_it_continues_from_requested_position() {
+        // Same position → reuse the threaded iterator.
+        assert!(cursor_continues(Some("seq-5"), Some("seq-5")));
+        assert!(cursor_continues(None, None)); // both at TRIM_HORIZON
+        // Reposition / restart → do not reuse.
+        assert!(!cursor_continues(Some("seq-5"), Some("seq-9")));
+        assert!(!cursor_continues(Some("seq-5"), None));
+        assert!(!cursor_continues(None, Some("seq-5")));
+    }
+
+    #[test]
+    fn cursor_position_advances_to_last_seq_else_holds() {
+        // Records delivered → advance to the last seq.
+        assert_eq!(advanced_after(Some("5"), Some("8")).as_deref(), Some("8"));
+        assert_eq!(advanced_after(None, Some("1")).as_deref(), Some("1"));
+        // Empty poll → hold the requested position (open shard keeps polling).
+        assert_eq!(advanced_after(Some("5"), None).as_deref(), Some("5"));
+        assert_eq!(advanced_after(None, None), None);
+    }
+
+    #[test]
+    fn recoverable_errors_are_classified() {
+        let mk = |s: &str| -> BoxError { s.to_string().into() };
+        assert!(is_recoverable(&mk("ExpiredIteratorException: iterator expired")));
+        assert!(is_recoverable(&mk("com.amazonaws...TrimmedDataAccessException")));
+        assert!(is_recoverable(&mk("ResourceNotFoundException")));
+        assert!(!is_recoverable(&mk("ValidationException: bad input")));
+        assert!(!is_recoverable(&mk("some other service error")));
+    }
 }

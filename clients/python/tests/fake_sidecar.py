@@ -28,6 +28,9 @@ def rec(seq, pk, active):
 def main():
     emit({"type": "records", "shard": "s0", "last_seq": "2",
           "records": [rec("1", "k1", True), rec("2", "k2", False)]})
+    # A malformed line the client must ignore without crashing.
+    sys.stdout.write("{not valid json\n")
+    sys.stdout.flush()
     emit({"type": "records", "shard": "s1", "last_seq": "9",
           "records": [rec("9", "k9", True)]})
 
@@ -47,6 +50,7 @@ def main():
         elif msg.get("type") == "stop":
             break
 
+    emit({"type": "shard_complete", "shard": "s1"})
     emit({"type": "shutdown", "reason": "done"})
     sys.exit(0)
 

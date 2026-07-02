@@ -207,7 +207,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{LeaseHandle, LeaseView, SyncConsumerFactory};
+    use crate::{AsyncShardConsumer, LeaseHandle, LeaseView, ShardConsumerFactory, SyncConsumerFactory};
     use ddbstreams_kcl_core::coordinator::RawLease;
     use ddbstreams_kcl_core::{Record, RecordBatch, RecordProcessor, RecordProcessorFactory, ShardMeta};
     use std::collections::HashMap;
@@ -414,6 +414,62 @@ mod tests {
             m.get("s0").unwrap(),
             &vec!["1", "2", "3"],
             "each record delivered exactly once across cycles (resumed from checkpoint)"
+        );
+    }
+
+    // A consumer that delivers but never acks (returns None) — the sidecar's
+    // "client hasn't checkpointed yet" case. The fleet must hold the lease
+    // (heartbeat) WITHOUT advancing the durable checkpoint.
+    struct NoAckFactory {
+        sink: Sink,
+    }
+    impl ShardConsumerFactory for NoAckFactory {
+        fn create(&self, shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send> {
+            Box::new(NoAckConsumer { shard: shard.clone(), sink: self.sink.clone() })
+        }
+    }
+    struct NoAckConsumer {
+        shard: ShardId,
+        sink: Sink,
+    }
+    #[async_trait::async_trait]
+    impl AsyncShardConsumer for NoAckConsumer {
+        async fn deliver(&mut self, records: &[Record]) -> Result<Option<String>, WorkerError> {
+            let mut m = self.sink.lock().unwrap();
+            for r in records {
+                m.entry(self.shard.clone()).or_default().push(r.seq.clone());
+            }
+            Ok(None) // delivered, but not durably checkpointed
+        }
+        async fn shard_ended(&mut self) -> Result<(), WorkerError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn fleet_without_ack_does_not_advance_checkpoint() {
+        // Because the consumer never acks, the durable checkpoint never advances,
+        // so an open shard is re-read from TRIM_HORIZON every cycle. Over 3
+        // cycles the same 3 records are re-delivered — proving the None path
+        // holds the lease but does NOT persist progress (the safe, at-least-once
+        // behavior a stuck/slow client would produce).
+        let source = OpenSource { records: vec![rec("s0", "1"), rec("s0", "2"), rec("s0", "3")] };
+        let sink: Sink = Arc::new(Mutex::new(HashMap::new()));
+        let factory = Arc::new(NoAckFactory { sink: sink.clone() });
+        let fleet = Fleet::new(
+            source,
+            FakeLeases::default(),
+            factory,
+            FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 100_000, poll_interval_ms: 1 },
+        );
+
+        fleet.run_until_complete(3).await.unwrap();
+
+        let m = sink.lock().unwrap();
+        assert_eq!(
+            m.get("s0").unwrap().len(),
+            9,
+            "3 records re-delivered across 3 cycles (checkpoint never advanced)"
         );
     }
 }
