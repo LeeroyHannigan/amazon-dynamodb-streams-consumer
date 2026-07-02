@@ -22,8 +22,8 @@ use ddb::types::{
 };
 use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
 use amazon_dynamodb_streams_consumer_core::{Record, RecordProcessor, RecordProcessorFactory, ShardId};
-use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::DynamoDbLeaseStore;
-use amazon_dynamodb_streams_consumer_source_ddbstreams::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
+use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
 use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

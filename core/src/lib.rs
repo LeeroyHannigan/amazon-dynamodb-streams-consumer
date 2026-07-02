@@ -4,7 +4,7 @@
 //! This crate owns the correctness-critical logic that is IDENTICAL regardless
 //! of how languages attach on top (daemon+IPC "Architecture A" or FFI "B"):
 //!   * shard graph consumption (lineage from DescribeStream, built in
-//!     `amazon-dynamodb-streams-consumer-source-ddbstreams`)
+//!     `amazon-dynamodb-streams-consumer-source`)
 //!   * ORDERING: single-owner-per-shard (in-sequence) + parent-before-child
 //!   * checkpointing
 //!

@@ -1,5 +1,5 @@
 [package]
-name = "amazon-dynamodb-streams-consumer-lease-dynamodb"
+name = "amazon-dynamodb-streams-consumer-lease"
 version = "0.0.1"
 edition = "2021"
 description = "DynamoDB-backed KCL-style lease coordination (optimistic-lock leases) for amazon-dynamodb-streams-consumer. Pure lease logic is always built; the async DynamoDB store is behind the optional `aws` feature."

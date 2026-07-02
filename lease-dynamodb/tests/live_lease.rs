@@ -5,11 +5,11 @@
 //! (`LeaseError::Lost`). Creates and deletes its own lease table.
 //!
 //! Run:
-//!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-lease-dynamodb \
+//!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-lease \
 //!     --features aws --test live_lease -- --nocapture
 
 use aws_sdk_dynamodb as ddb;
-use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
+use amazon_dynamodb_streams_consumer_lease::dynamodb::{DynamoDbLeaseStore, LeaseError};
 
 #[tokio::test]
 async fn live_optimistic_lock_lease_cycle() {

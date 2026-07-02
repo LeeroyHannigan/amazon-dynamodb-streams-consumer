@@ -11,8 +11,8 @@ path = "src/main.rs"
 [dependencies]
 amazon-dynamodb-streams-consumer-core = { path = "../core" }
 amazon-dynamodb-streams-consumer-protocol = { path = "../protocol" }
-amazon-dynamodb-streams-consumer-source-ddbstreams = { path = "../source-ddbstreams", features = ["aws"] }
-amazon-dynamodb-streams-consumer-lease-dynamodb = { path = "../lease-dynamodb", features = ["aws"] }
+amazon-dynamodb-streams-consumer-source = { path = "../source-ddbstreams", features = ["aws"] }
+amazon-dynamodb-streams-consumer-lease = { path = "../lease-dynamodb", features = ["aws"] }
 amazon-dynamodb-streams-consumer-worker = { path = "../worker", features = ["aws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "time"] }
 async-trait = "0.1"

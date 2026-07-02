@@ -3,8 +3,8 @@
 
 use crate::{AsyncLeaseStore, AsyncStreamSource, LeaseHandle, LeaseView, WorkerError};
 use amazon_dynamodb_streams_consumer_core::{RecordBatch, ShardMeta};
-use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
-use amazon_dynamodb_streams_consumer_source_ddbstreams::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_lease::dynamodb::{DynamoDbLeaseStore, LeaseError};
+use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
 
 #[async_trait::async_trait]
 impl AsyncStreamSource for DdbStreamsSource {

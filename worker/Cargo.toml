@@ -6,16 +6,16 @@ description = "Async worker that composes a StreamSource + LeaseStore + RecordPr
 
 [features]
 aws = [
-    "dep:amazon-dynamodb-streams-consumer-source-ddbstreams",
-    "dep:amazon-dynamodb-streams-consumer-lease-dynamodb",
+    "dep:amazon-dynamodb-streams-consumer-source",
+    "dep:amazon-dynamodb-streams-consumer-lease",
 ]
 
 [dependencies]
 amazon-dynamodb-streams-consumer-core = { path = "../core" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["rt", "time", "macros"] }
-amazon-dynamodb-streams-consumer-source-ddbstreams = { path = "../source-ddbstreams", features = ["aws"], optional = true }
-amazon-dynamodb-streams-consumer-lease-dynamodb = { path = "../lease-dynamodb", features = ["aws"], optional = true }
+amazon-dynamodb-streams-consumer-source = { path = "../source-ddbstreams", features = ["aws"], optional = true }
+amazon-dynamodb-streams-consumer-lease = { path = "../lease-dynamodb", features = ["aws"], optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

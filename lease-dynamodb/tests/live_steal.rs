@@ -8,12 +8,12 @@
 //! deletes its own lease table.
 //!
 //! Run:
-//!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-lease-dynamodb \
+//!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-lease \
 //!     --features aws --test live_steal -- --nocapture
 
 use aws_sdk_dynamodb as ddb;
 use amazon_dynamodb_streams_consumer_core::taker::{compute_leases_to_take, LeaseSnapshot};
-use amazon_dynamodb_streams_consumer_lease_dynamodb::dynamodb::{DynamoDbLeaseStore, LeaseError};
+use amazon_dynamodb_streams_consumer_lease::dynamodb::{DynamoDbLeaseStore, LeaseError};
 
 #[tokio::test]
 async fn live_worker_steals_expired_leases() {

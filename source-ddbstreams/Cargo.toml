@@ -1,5 +1,5 @@
 [package]
-name = "amazon-dynamodb-streams-consumer-source-ddbstreams"
+name = "amazon-dynamodb-streams-consumer-source"
 version = "0.0.1"
 edition = "2021"
 description = "DynamoDB Streams StreamSource for amazon-dynamodb-streams-consumer-core. Pure DescribeStream shard-graph logic (always built); the async aws-sdk-dynamodbstreams adapter is behind the optional `aws` feature."
