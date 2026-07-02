@@ -1,69 +1,49 @@
-<h1 align="center">amazon-dynamodb-streams-consumer</h1>
+# Amazon DynamoDB Streams Consumer
 
-<p align="center">
-  <strong>A high-level, multi-language, JVM-free consumer for Amazon DynamoDB Streams.</strong><br>
-  Shard discovery, leasing, ordering, checkpointing, and worker load-balancing — handled for you.
-</p>
+A client library for consuming [Amazon DynamoDB Streams](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Streams.html)
+at scale from any language, without a JVM.
 
-<p align="center">
-  <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue.svg">
-  <img alt="Rust" src="https://img.shields.io/badge/core-Rust-orange.svg">
-  <img alt="Python" src="https://img.shields.io/badge/client-Python%203.8%2B-3776AB.svg?logo=python&logoColor=white">
-  <img alt="Tests" src="https://img.shields.io/badge/tests-72%20unit%20%2B%206%20live-brightgreen.svg">
-  <img alt="Coverage" src="https://img.shields.io/badge/coverage-~94%25-brightgreen.svg">
-  <img alt="Status" src="https://img.shields.io/badge/status-alpha-yellow.svg">
-</p>
+The AWS SDKs provide a low-level DynamoDB Streams client (`DynamoDbStreamsClient`) that exposes the raw
+`DescribeStream`, `GetShardIterator`, and `GetRecords` operations. Building a production consumer on top of
+that requires handling shard discovery and lineage, coordinating multiple workers, preserving per-shard
+order, checkpointing progress, and rebalancing on failure. The established solution — the Amazon Kinesis
+Client Library (KCL) with the DynamoDB Streams Kinesis Adapter — requires the Java Virtual Machine.
 
----
+This library implements the same lease-based coordination and checkpointing model natively for DynamoDB
+Streams in Rust, and makes it available to other languages through a lightweight client. Applications
+implement a record processor; the library handles the rest.
 
-## Why
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-The AWS SDK gives you a **low-level** DynamoDB Streams client (`DynamoDbStreamsClient`) — raw
-`DescribeStream` / `GetShardIterator` / `GetRecords`. Turning that into a correct, scalable consumer
-means solving the hard parts yourself: walking the shard lineage, coordinating workers with a lease
-table, preserving per-shard order, checkpointing, and rebalancing on failure.
+## Features
 
-Today the only battle-tested answer is the **Kinesis Client Library (KCL)** via the DynamoDB Streams
-Kinesis Adapter — which drags in a **JVM**. There is no first-class story for Python, Go, Node, or Rust.
+- Per-shard ordered delivery, including correct parent-before-child ordering across shard splits and merges.
+- Multi-worker coordination through a DynamoDB lease table, with automatic shard balancing and failover.
+- At-least-once processing with checkpointing; a worker resumes from the last checkpoint after failure.
+- Horizontal scaling by running additional worker processes — no configuration changes required.
+- Language clients that are thin and dependency-free; the Rust core and sidecar contain all coordination logic.
 
-**`amazon-dynamodb-streams-consumer` is that story.** It reimplements the KCL lease-and-checkpoint model
-**natively for DynamoDB Streams, in Rust**, and exposes it to any language through a thin client — no JVM,
-no sidecar language lock-in. You write a record handler; it does the rest.
+## Architecture
 
-## Highlights
-
-- 🧩 **Just write a processor** — receive ordered, decoded change records; the library owns shards, leases, and checkpoints.
-- 🔒 **Correct by construction** — parent-before-child ordering across resharding, optimistic-lock leases, exactly-the-KCL-model checkpointing.
-- ⚖️ **Scales horizontally** — run N copies; leases balance shards across workers automatically, with fast failover on shutdown.
-- 🌍 **Multi-language, zero JVM** — a Rust core + sidecar do the work; language clients are thin stdio bridges (Python today; Go/Node next).
-- ✅ **Proven** — live-verified end-to-end against real DynamoDB Streams; ~94% line coverage.
-- 🪶 **Lightweight** — the Python client has **zero runtime dependencies**.
-
-## How it works
+The coordination logic runs in a Rust process, the *sidecar*. A language client spawns the sidecar and
+communicates with it over stdin/stdout using a newline-delimited JSON protocol: the sidecar sends ordered
+record batches, and the client replies with checkpoint acknowledgements.
 
 ```
-┌──────────────────────────┐        stdio (JSON-Lines)        ┌───────────────────────────────┐
-│  Your app (Python/Go/…)  │  ── records ──▶                  │   Rust sidecar                │
-│                          │                                  │   • shard discovery + lineage │
-│  class MyProcessor:      │  ◀── checkpoint acks ──          │   • DynamoDB leases (steal/    │
-│    def process_records() │                                  │     expire/renew)             │
-└──────────────────────────┘                                  │   • per-shard ordering        │
-                                                              │   • checkpointing             │
-                                                              └───────────────┬───────────────┘
-                                                                              │ aws-sdk
-                                                              ┌───────────────▼───────────────┐
-                                                              │  DynamoDB Streams + lease table │
-                                                              └────────────────────────────────┘
+  Application (Python, ...)             Sidecar (Rust)                     AWS
+  ------------------------              --------------                     ---
+  record processor    <-- records --   shard discovery & lineage
+                      -- checkpoints -> DynamoDB leases                 DynamoDB Streams
+                                        per-shard ordering       <-->   Lease table
+                                        checkpointing
 ```
 
-The sidecar streams ordered record batches to your process; your handler runs; the client acks, and
-**only then** does the sidecar advance the checkpoint (**at-least-once**, exactly like KCL). Scale out by
-running the same code on more hosts — the lease table balances shards across them, and on shutdown a
-worker releases its leases so another takes over immediately.
+Because all shard, lease, and checkpoint handling lives in the sidecar, adding a language is a small client
+that speaks the protocol — there is no JVM and no per-language reimplementation of the hard parts.
 
-## Quick start (Python)
+## Getting started (Python)
 
-```bash
+```
 pip install amazon-dynamodb-streams-consumer
 ```
 
@@ -72,14 +52,14 @@ from dynamodb_streams_consumer import Worker
 
 class OrderProcessor:
     def process_records(self, records):
-        for r in records:
-            # r.event_name is INSERT / MODIFY / REMOVE
-            # r.keys / r.new_image / r.old_image are decoded DynamoDB items
-            print(r.event_name, r.keys, "->", r.new_image)
+        for record in records:
+            # record.event_name is INSERT, MODIFY, or REMOVE.
+            # record.keys, record.new_image, and record.old_image are decoded
+            # DynamoDB items (native Python values).
+            print(record.event_name, record.keys, record.new_image)
 
-    # optional
-    def shard_ended(self, shard_id):
-        print("finished shard", shard_id)
+    def shard_ended(self, shard_id):   # optional
+        pass
 
 Worker(
     stream_arn="arn:aws:dynamodb:us-east-1:123456789012:table/Orders/stream/2026-...",
@@ -89,58 +69,66 @@ Worker(
 ).run()
 ```
 
-That's the whole API. `run()` blocks until the stream is fully consumed, you call `stop()` from another
-thread, or you Ctrl-C. Records arrive **in per-shard order**; each batch is checkpointed only after your
+`run()` blocks until the stream is fully consumed, `stop()` is called from another thread, or the process is
+interrupted. Records are delivered in per-shard order, and each batch is checkpointed only after
 `process_records` returns.
 
-### Scaling out
+To scale out, run the same program on additional hosts. Workers coordinate through the `lease_table`:
+shards are distributed among them, and if a worker stops, its leases are released (or expire) and another
+worker resumes from the last checkpoint.
 
-Run the same script on more hosts/containers. They coordinate through the `lease_table` in DynamoDB —
-shards are distributed across workers, and if one dies its leases expire (or are released on graceful
-shutdown) and another picks them up, resuming from the last checkpoint.
+The Python client requires the `amazon-dynamodb-streams-consumer-sidecar` binary. It is located via the
+`sidecar_path` argument, the `DDB_STREAMS_CONSUMER_SIDECAR` environment variable, or `PATH`. AWS credentials
+and region are read from the standard AWS environment.
 
-### Record shape
+See [`clients/python/README.md`](clients/python/README.md) for the full client reference.
 
-`Record` fields: `shard_id`, `sequence_number`, `event_name`, `stream_view_type`, `keys`, `new_image`,
-`old_image`. Item images decode to native Python — `S`→`str`, `N`→`str` (lossless), `Bool`→`bool`,
-`Null`→`None`, `B`→`bytes`, `M`→`dict`, `L`→`list`, sets→`list`.
+## Concepts
 
-## Components
+**Ordering.** DynamoDB Streams guarantees order only within a shard. The library preserves this by ensuring
+exactly one worker owns a shard at a time (enforced by an optimistic lock on the lease's counter) and by
+processing a shard's records sequentially. Across a resharding event, a child shard is not started until its
+parent shards are fully consumed and marked complete, which preserves the order of a key's changes across the
+split or merge.
 
-| Component | What it is |
+**Leasing and balancing.** Each shard has a lease row in a DynamoDB table. Workers acquire, renew, and steal
+leases using conditional writes, targeting an even share of shards. Expired leases (from a stopped worker)
+are taken over automatically.
+
+**Checkpointing.** After a batch is processed and acknowledged, the last sequence number is stored on the
+lease. A worker that takes over a shard resumes immediately after that sequence number.
+
+## Project layout
+
+| Crate / package | Description |
 |---|---|
-| `amazon-dynamodb-streams-consumer-core` | Pure ordering/lease/checkpoint engine + typed record model (no AWS, no network). |
-| `…-source` | DynamoDB Streams shard-graph logic + async reader over `aws-sdk-dynamodbstreams`. |
-| `…-lease` | Optimistic-lock lease store on DynamoDB (acquire/renew/checkpoint/steal/release). |
-| `…-worker` | The `Fleet` runtime: per-shard concurrent tasks, coordination, shard-sync, checkpoint resume. |
-| `…-protocol` | JSON-Lines wire protocol shared by the sidecar and language clients. |
-| `…-sidecar` | The consumer binary a language client spawns and talks to over stdio. |
-| `clients/python` | The reference Python client (`dynamodb_streams_consumer`). |
+| `amazon-dynamodb-streams-consumer-core` | Coordination and ordering engine and the typed record model. No AWS dependencies. |
+| `amazon-dynamodb-streams-consumer-source` | Shard-graph construction and the async DynamoDB Streams reader. |
+| `amazon-dynamodb-streams-consumer-lease` | DynamoDB-backed lease store (acquire, renew, checkpoint, steal, release). |
+| `amazon-dynamodb-streams-consumer-worker` | The worker runtime that composes the above and drives per-shard processing. |
+| `amazon-dynamodb-streams-consumer-protocol` | The client/sidecar wire protocol. |
+| `amazon-dynamodb-streams-consumer-sidecar` | The consumer process a language client runs. |
+| `clients/python` | The Python client (`dynamodb_streams_consumer`). |
 
-## Configuration
+## Building and testing
 
-The sidecar reads standard AWS credentials/region from the environment. Tunables (all optional, set as
-`Worker(...)` kwargs or `DDB_STREAMS_CONSUMER_*` env vars): `owner`, `region`, `max_leases`,
-`lease_duration_ms`, `poll_interval_ms`, `cycle_interval_ms`.
-
-## Development
-
-```bash
-# Rust: build, test, lint (offline)
+```
+# Build, unit test, and lint (no AWS access required)
 cargo test --workspace
 cargo clippy --workspace --all-targets --features aws
 
-# Rust: live integration tests (needs AWS creds)
+# Integration tests against a live account
 DDB_STREAMS_CONSUMER_IT=1 AWS_REGION=us-east-1 cargo test --workspace --features aws
 
-# Python client
+# Python client tests
 cd clients/python && python3 -m unittest discover -s tests
 ```
 
-## Heritage & license
+## License
 
-Licensed under **Apache-2.0**. This project reimplements the algorithms of the Apache-2.0
-[Kinesis Client Library](https://github.com/awslabs/amazon-kinesis-client) and the
-[DynamoDB Streams Kinesis Adapter](https://github.com/awslabs/dynamodb-streams-kinesis-adapter) —
-lease coordination, parent-before-child shard ordering, and checkpointing — natively for DynamoDB Streams
-and without a JVM. See [`core/REFERENCES.md`](core/REFERENCES.md) for the behavior-by-behavior source mapping.
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+It reimplements the coordination and checkpointing algorithms of the Apache-2.0
+[Amazon Kinesis Client Library](https://github.com/awslabs/amazon-kinesis-client) and
+[DynamoDB Streams Kinesis Adapter](https://github.com/awslabs/dynamodb-streams-kinesis-adapter) natively for
+DynamoDB Streams. See [`core/REFERENCES.md`](core/REFERENCES.md) for the behavior-to-source mapping.
