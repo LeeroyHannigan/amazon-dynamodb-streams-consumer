@@ -8,3 +8,12 @@ members = [
     "protocol",
     "sidecar",
 ]
+
+# Single source of truth for the version across every crate (lockstep). Bump
+# here; each crate inherits via `version.workspace = true`. The Python client
+# derives the same version from the git tag (setuptools-scm), so one
+# `vX.Y.Z` tag releases the whole project.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"

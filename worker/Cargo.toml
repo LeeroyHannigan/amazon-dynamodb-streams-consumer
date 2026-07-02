@@ -1,7 +1,8 @@
 [package]
 name = "amazon-dynamodb-streams-consumer-worker"
-version = "0.0.1"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 description = "Async worker that composes a StreamSource + LeaseStore + RecordProcessor into an ordering-preserving DynamoDB Streams consumer. Engine + async traits are always built (offline-tested); the concrete AWS wiring is behind the optional `aws` feature."
 
 [features]
