@@ -11,9 +11,9 @@
 //!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-lease \
 //!     --features aws --test live_steal -- --nocapture
 
-use aws_sdk_dynamodb as ddb;
 use amazon_dynamodb_streams_consumer_core::taker::{compute_leases_to_take, LeaseSnapshot};
 use amazon_dynamodb_streams_consumer_lease::dynamodb::{DynamoDbLeaseStore, LeaseError};
+use aws_sdk_dynamodb as ddb;
 
 #[tokio::test]
 async fn live_worker_steals_expired_leases() {
@@ -24,7 +24,10 @@ async fn live_worker_steals_expired_leases() {
 
     let cfg = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let client = ddb::Client::new(&cfg);
-    let table = format!("amazon-dynamodb-streams-consumer-steal-it-{}", std::process::id());
+    let table = format!(
+        "amazon-dynamodb-streams-consumer-steal-it-{}",
+        std::process::id()
+    );
     let store = DynamoDbLeaseStore::new(client.clone(), &table);
     store.ensure_table().await.expect("ensure_table");
 
@@ -33,7 +36,9 @@ async fn live_worker_steals_expired_leases() {
     outcome.expect("steal scenario");
 }
 
-async fn run_steal(store: &DynamoDbLeaseStore) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_steal(
+    store: &DynamoDbLeaseStore,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // w1 acquires 4 leases (counter 1 each).
     for k in ["s0", "s1", "s2", "s3"] {
         let l = store.acquire(k, "w1").await.map_err(bx)?;
@@ -46,10 +51,30 @@ async fn run_steal(store: &DynamoDbLeaseStore) -> Result<(), Box<dyn std::error:
     // Coordinator judgment: s2,s3 expired (w1 stopped heartbeating). Build the
     // snapshot the taker sees.
     let snapshot = vec![
-        LeaseSnapshot { lease_key: "s0".into(), owner: Some("w1".into()), expired: false, completed: false },
-        LeaseSnapshot { lease_key: "s1".into(), owner: Some("w1".into()), expired: false, completed: false },
-        LeaseSnapshot { lease_key: "s2".into(), owner: Some("w1".into()), expired: true, completed: false },
-        LeaseSnapshot { lease_key: "s3".into(), owner: Some("w1".into()), expired: true, completed: false },
+        LeaseSnapshot {
+            lease_key: "s0".into(),
+            owner: Some("w1".into()),
+            expired: false,
+            completed: false,
+        },
+        LeaseSnapshot {
+            lease_key: "s1".into(),
+            owner: Some("w1".into()),
+            expired: false,
+            completed: false,
+        },
+        LeaseSnapshot {
+            lease_key: "s2".into(),
+            owner: Some("w1".into()),
+            expired: true,
+            completed: false,
+        },
+        LeaseSnapshot {
+            lease_key: "s3".into(),
+            owner: Some("w1".into()),
+            expired: true,
+            completed: false,
+        },
     ];
 
     // Pure taker: w2 (holds 0, target 2) should take the two expired leases.
@@ -68,7 +93,9 @@ async fn run_steal(store: &DynamoDbLeaseStore) -> Result<(), Box<dyn std::error:
     assert_eq!(s2.lease_owner.as_deref(), Some("w2"));
     match store.renew("s2", "w1", 1).await {
         Err(LeaseError::Lost) => {}
-        other => return Err(format!("expected w1 renew of stolen s2 to be Lost, got {other:?}").into()),
+        other => {
+            return Err(format!("expected w1 renew of stolen s2 to be Lost, got {other:?}").into())
+        }
     }
 
     // w1 still holds s0 (renewable at counter 2).

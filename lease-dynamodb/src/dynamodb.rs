@@ -48,7 +48,10 @@ pub struct DynamoDbLeaseStore {
 
 impl DynamoDbLeaseStore {
     pub fn new(client: Client, table: impl Into<String>) -> Self {
-        Self { client, table: table.into() }
+        Self {
+            client,
+            table: table.into(),
+        }
     }
 
     pub async fn from_env(table: impl Into<String>) -> Self {
@@ -59,7 +62,13 @@ impl DynamoDbLeaseStore {
     /// Create the lease table (PK `leaseKey`, PAY_PER_REQUEST) if absent, and
     /// wait until ACTIVE. Idempotent.
     pub async fn ensure_table(&self) -> Result<(), BoxError> {
-        let exists = self.client.describe_table().table_name(&self.table).send().await.is_ok();
+        let exists = self
+            .client
+            .describe_table()
+            .table_name(&self.table)
+            .send()
+            .await
+            .is_ok();
         if !exists {
             self.client
                 .create_table()
@@ -81,7 +90,12 @@ impl DynamoDbLeaseStore {
                 .await?;
         }
         loop {
-            let d = self.client.describe_table().table_name(&self.table).send().await?;
+            let d = self
+                .client
+                .describe_table()
+                .table_name(&self.table)
+                .send()
+                .await?;
             if d.table().and_then(|t| t.table_status()) == Some(&TableStatus::Active) {
                 return Ok(());
             }
@@ -162,7 +176,12 @@ impl DynamoDbLeaseStore {
         self.claim(lease_key, owner, current.lease_counter).await
     }
 
-    async fn claim(&self, lease_key: &str, owner: &str, seen_counter: u64) -> Result<Lease, LeaseError> {
+    async fn claim(
+        &self,
+        lease_key: &str,
+        owner: &str,
+        seen_counter: u64,
+    ) -> Result<Lease, LeaseError> {
         let r = self
             .client
             .update_item()
@@ -189,7 +208,12 @@ impl DynamoDbLeaseStore {
 
     /// Heartbeat: bump the counter, conditioned on still owning it at the counter
     /// we hold. Returns the new counter, or `LeaseError::Lost` if stolen.
-    pub async fn renew(&self, lease_key: &str, owner: &str, counter: u64) -> Result<u64, LeaseError> {
+    pub async fn renew(
+        &self,
+        lease_key: &str,
+        owner: &str,
+        counter: u64,
+    ) -> Result<u64, LeaseError> {
         let r = self
             .client
             .update_item()
@@ -237,7 +261,12 @@ impl DynamoDbLeaseStore {
     }
 
     /// Mark the shard fully processed (SHARD_END), conditioned on ownership.
-    pub async fn mark_complete(&self, lease_key: &str, owner: &str, counter: u64) -> Result<(), LeaseError> {
+    pub async fn mark_complete(
+        &self,
+        lease_key: &str,
+        owner: &str,
+        counter: u64,
+    ) -> Result<(), LeaseError> {
         let r = self
             .client
             .update_item()
@@ -260,7 +289,12 @@ impl DynamoDbLeaseStore {
     /// on ownership. Lets another worker take it over **immediately** on graceful
     /// shutdown instead of waiting for the lease to expire (KCL evicts on
     /// shutdown). A `LeaseError::Lost` means it was already stolen — harmless.
-    pub async fn release(&self, lease_key: &str, owner: &str, counter: u64) -> Result<(), LeaseError> {
+    pub async fn release(
+        &self,
+        lease_key: &str,
+        owner: &str,
+        counter: u64,
+    ) -> Result<(), LeaseError> {
         let r = self
             .client
             .update_item()
@@ -303,6 +337,10 @@ fn item_to_lease(item: &HashMap<String, AttributeValue>) -> Lease {
         lease_owner: s(LEASE_OWNER),
         lease_counter: n(LEASE_COUNTER).unwrap_or(0),
         checkpoint: s(CHECKPOINT),
-        completed: item.get(COMPLETED).and_then(|v| v.as_bool().ok()).copied().unwrap_or(false),
+        completed: item
+            .get(COMPLETED)
+            .and_then(|v| v.as_bool().ok())
+            .copied()
+            .unwrap_or(false),
     }
 }

@@ -63,10 +63,16 @@ mod tests {
     use super::*;
 
     fn meta(id: &str, parents: &[&str]) -> ShardMeta {
-        ShardMeta { id: id.into(), parents: parents.iter().map(|p| p.to_string()).collect() }
+        ShardMeta {
+            id: id.into(),
+            parents: parents.iter().map(|p| p.to_string()).collect(),
+        }
     }
     fn st(completed: bool, processing: bool) -> LeaseState {
-        LeaseState { completed, processing }
+        LeaseState {
+            completed,
+            processing,
+        }
     }
 
     #[test]

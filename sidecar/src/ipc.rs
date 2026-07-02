@@ -14,7 +14,9 @@
 use amazon_dynamodb_streams_consumer_core::record::StreamRecord;
 use amazon_dynamodb_streams_consumer_core::{Record, ShardId};
 use amazon_dynamodb_streams_consumer_protocol::{ClientMessage, ServerMessage};
-use amazon_dynamodb_streams_consumer_worker::{AsyncShardConsumer, ShardConsumerFactory, WorkerError};
+use amazon_dynamodb_streams_consumer_worker::{
+    AsyncShardConsumer, ShardConsumerFactory, WorkerError,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
@@ -74,7 +76,8 @@ impl Ipc {
     }
 
     fn signal_stop(&self) {
-        self.stopped.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         self.stop.notify_waiters();
     }
 
@@ -85,7 +88,11 @@ impl Ipc {
 
     /// Best-effort notify the client that the sidecar is shutting down.
     pub async fn shutdown(&self, reason: &str) {
-        let _ = self.send(&ServerMessage::Shutdown { reason: reason.to_string() }).await;
+        let _ = self
+            .send(&ServerMessage::Shutdown {
+                reason: reason.to_string(),
+            })
+            .await;
     }
 
     /// True once the client has asked to stop or disconnected.
@@ -118,7 +125,11 @@ impl Ipc {
         let (tx, rx) = oneshot::channel();
         // Register the waiter BEFORE sending so an immediate ack can't race past us.
         self.pending.lock().await.insert(shard.clone(), tx);
-        let msg = ServerMessage::Records { shard: shard.clone(), last_seq, records };
+        let msg = ServerMessage::Records {
+            shard: shard.clone(),
+            last_seq,
+            records,
+        };
         if self.send(&msg).await.is_err() {
             self.pending.lock().await.remove(shard);
             return None;
@@ -140,7 +151,10 @@ impl IpcConsumerFactory {
 
 impl ShardConsumerFactory for IpcConsumerFactory {
     fn create(&self, shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send> {
-        Box::new(IpcConsumer { ipc: self.ipc.clone(), shard: shard.clone() })
+        Box::new(IpcConsumer {
+            ipc: self.ipc.clone(),
+            shard: shard.clone(),
+        })
     }
 }
 
@@ -158,15 +172,22 @@ impl AsyncShardConsumer for IpcConsumer {
         };
         // Decode each opaque payload back into the typed change record for the
         // client. A malformed payload is skipped rather than aborting the batch.
-        let decoded: Vec<StreamRecord> =
-            records.iter().filter_map(|r| StreamRecord::decode(&r.data).ok()).collect();
+        let decoded: Vec<StreamRecord> = records
+            .iter()
+            .filter_map(|r| StreamRecord::decode(&r.data).ok())
+            .collect();
         // `None` (client gone / no ack) → the fleet holds the lease without
         // advancing the durable checkpoint; on restart we resume from the last ack.
         Ok(self.ipc.deliver_batch(&self.shard, last_seq, decoded).await)
     }
 
     async fn shard_ended(&mut self) -> Result<(), WorkerError> {
-        let _ = self.ipc.send(&ServerMessage::ShardComplete { shard: self.shard.clone() }).await;
+        let _ = self
+            .ipc
+            .send(&ServerMessage::ShardComplete {
+                shard: self.shard.clone(),
+            })
+            .await;
         Ok(())
     }
 }
@@ -185,7 +206,11 @@ mod tests {
             keys,
             ..Default::default()
         };
-        Record { shard_id: shard.into(), seq: seq.into(), data: sr.encode() }
+        Record {
+            shard_id: shard.into(),
+            seq: seq.into(),
+            data: sr.encode(),
+        }
     }
 
     // A client that reads Records, decodes them, and acks last_seq — exactly
@@ -206,27 +231,51 @@ mod tests {
             let line = lines.next_line().await.unwrap().unwrap();
             let msg = ServerMessage::parse(&line).unwrap();
             let (shard, last_seq, n, has_pk) = match msg {
-                ServerMessage::Records { shard, last_seq, records } => (
+                ServerMessage::Records {
+                    shard,
+                    last_seq,
+                    records,
+                } => (
                     shard,
                     last_seq,
                     records.len(),
-                    records.first().map(|r| r.keys.contains_key("pk")).unwrap_or(false),
+                    records
+                        .first()
+                        .map(|r| r.keys.contains_key("pk"))
+                        .unwrap_or(false),
                 ),
                 other => panic!("expected records, got {other:?}"),
             };
             // Ack the batch.
-            cw.write_all(ClientMessage::Checkpoint { shard, seq: last_seq.clone() }.to_line().as_bytes())
-                .await
-                .unwrap();
+            cw.write_all(
+                ClientMessage::Checkpoint {
+                    shard,
+                    seq: last_seq.clone(),
+                }
+                .to_line()
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
             cw.flush().await.unwrap();
             (last_seq, n, has_pk)
         });
 
-        let mut consumer = IpcConsumer { ipc: ipc.clone(), shard: "s0".into() };
-        let batch = vec![rec("s0", "100000000000000000001"), rec("s0", "100000000000000000002")];
+        let mut consumer = IpcConsumer {
+            ipc: ipc.clone(),
+            shard: "s0".into(),
+        };
+        let batch = vec![
+            rec("s0", "100000000000000000001"),
+            rec("s0", "100000000000000000002"),
+        ];
         let ack = consumer.deliver(&batch).await.unwrap();
 
-        assert_eq!(ack.as_deref(), Some("100000000000000000002"), "fleet checkpoints the acked seq");
+        assert_eq!(
+            ack.as_deref(),
+            Some("100000000000000000002"),
+            "fleet checkpoints the acked seq"
+        );
         let (client_last, n, has_pk) = client.await.unwrap();
         assert_eq!(client_last, "100000000000000000002");
         assert_eq!(n, 2, "client received both records");
@@ -246,7 +295,10 @@ mod tests {
         assert!(ipc.is_stopped());
 
         // A delivery with no client to ack resolves to None (no checkpoint), not a hang.
-        let mut consumer = IpcConsumer { ipc: ipc.clone(), shard: "s0".into() };
+        let mut consumer = IpcConsumer {
+            ipc: ipc.clone(),
+            shard: "s0".into(),
+        };
         let batch = [rec("s0", "1")];
         let ack = tokio::select! {
             a = consumer.deliver(&batch) => a.unwrap(),

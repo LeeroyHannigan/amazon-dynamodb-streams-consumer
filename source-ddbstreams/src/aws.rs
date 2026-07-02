@@ -10,9 +10,9 @@
 //! (awslabs/dynamodb-streams-kinesis-adapter, Apache-2.0). See core/REFERENCES.md.
 
 use crate::{build_shard_graph, close_open_parents, DdbShard};
+use amazon_dynamodb_streams_consumer_core::{Record, RecordBatch, ShardMeta};
 use aws_sdk_dynamodbstreams::types::ShardIteratorType;
 use aws_sdk_dynamodbstreams::Client;
-use amazon_dynamodb_streams_consumer_core::{Record, RecordBatch, ShardMeta};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
@@ -136,7 +136,13 @@ impl DdbStreamsSource {
         let mut cursors = self.cursors.lock().unwrap();
         match iterator {
             Some(it) => {
-                cursors.insert(shard.to_string(), Cursor { after, iterator: it });
+                cursors.insert(
+                    shard.to_string(),
+                    Cursor {
+                        after,
+                        iterator: it,
+                    },
+                );
             }
             None => {
                 cursors.remove(shard); // SHARD_END → nothing more to thread.
@@ -171,13 +177,21 @@ impl DdbStreamsSource {
                 Ok(Some(it)) => it,
                 Ok(None) => {
                     self.drop_cursor(shard);
-                    return Ok(RecordBatch { records: vec![], shard_end: true });
+                    return Ok(RecordBatch {
+                        records: vec![],
+                        shard_end: true,
+                    });
                 }
                 Err(e) if is_recoverable(&e) && after.is_some() => {
                     // Checkpoint too old → restart at TRIM_HORIZON.
                     match self.derive_iterator(shard, None).await? {
                         Some(it) => it,
-                        None => return Ok(RecordBatch { records: vec![], shard_end: true }),
+                        None => {
+                            return Ok(RecordBatch {
+                                records: vec![],
+                                shard_end: true,
+                            })
+                        }
                     }
                 }
                 Err(e) => return Err(e),
@@ -185,7 +199,13 @@ impl DdbStreamsSource {
         };
 
         // 2) GetRecords, self-healing an expired/trimmed threaded iterator once.
-        let resp = match self.client.get_records().shard_iterator(&iterator).send().await {
+        let resp = match self
+            .client
+            .get_records()
+            .shard_iterator(&iterator)
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 let be: BoxError = e.into();
@@ -195,9 +215,18 @@ impl DdbStreamsSource {
                     self.drop_cursor(shard);
                     let fresh = match self.derive_iterator(shard, after).await? {
                         Some(it) => it,
-                        None => return Ok(RecordBatch { records: vec![], shard_end: true }),
+                        None => {
+                            return Ok(RecordBatch {
+                                records: vec![],
+                                shard_end: true,
+                            })
+                        }
                     };
-                    self.client.get_records().shard_iterator(&fresh).send().await?
+                    self.client
+                        .get_records()
+                        .shard_iterator(&fresh)
+                        .send()
+                        .await?
                 } else {
                     return Err(be);
                 }
@@ -263,7 +292,7 @@ mod tests {
         // Same position → reuse the threaded iterator.
         assert!(cursor_continues(Some("seq-5"), Some("seq-5")));
         assert!(cursor_continues(None, None)); // both at TRIM_HORIZON
-        // Reposition / restart → do not reuse.
+                                               // Reposition / restart → do not reuse.
         assert!(!cursor_continues(Some("seq-5"), Some("seq-9")));
         assert!(!cursor_continues(Some("seq-5"), None));
         assert!(!cursor_continues(None, Some("seq-5")));
@@ -282,8 +311,12 @@ mod tests {
     #[test]
     fn recoverable_errors_are_classified() {
         let mk = |s: &str| -> BoxError { s.to_string().into() };
-        assert!(is_recoverable(&mk("ExpiredIteratorException: iterator expired")));
-        assert!(is_recoverable(&mk("com.amazonaws...TrimmedDataAccessException")));
+        assert!(is_recoverable(&mk(
+            "ExpiredIteratorException: iterator expired"
+        )));
+        assert!(is_recoverable(&mk(
+            "com.amazonaws...TrimmedDataAccessException"
+        )));
         assert!(is_recoverable(&mk("ResourceNotFoundException")));
         assert!(!is_recoverable(&mk("ValidationException: bad input")));
         assert!(!is_recoverable(&mk("some other service error")));

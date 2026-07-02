@@ -9,16 +9,16 @@
 //!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-worker \
 //!     --features aws --test live_worker -- --nocapture
 
+use amazon_dynamodb_streams_consumer_core::{Record, RecordProcessor, ShardId};
+use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
+use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_worker::Worker;
 use aws_sdk_dynamodb as ddb;
 use aws_sdk_dynamodbstreams as streams;
 use ddb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType, StreamSpecification, StreamViewType, TableStatus,
 };
-use amazon_dynamodb_streams_consumer_core::{Record, RecordProcessor, ShardId};
-use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
-use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
-use amazon_dynamodb_streams_consumer_worker::Worker;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -32,7 +32,10 @@ impl RecordProcessor for Recording {
     fn initialize(&mut self, _s: &ShardId) {}
     fn process_records(&mut self, rs: &[Record]) {
         for r in rs {
-            self.by_shard.entry(r.shard_id.clone()).or_default().push(r.seq.clone());
+            self.by_shard
+                .entry(r.shard_id.clone())
+                .or_default()
+                .push(r.seq.clone());
             self.total += 1;
         }
     }
@@ -62,14 +65,39 @@ async fn live_worker_consumes_and_checkpoints() {
 
     db.create_table()
         .table_name(&data_table)
-        .attribute_definitions(AttributeDefinition::builder().attribute_name("pk").attribute_type(ScalarAttributeType::S).build().unwrap())
-        .key_schema(KeySchemaElement::builder().attribute_name("pk").key_type(KeyType::Hash).build().unwrap())
+        .attribute_definitions(
+            AttributeDefinition::builder()
+                .attribute_name("pk")
+                .attribute_type(ScalarAttributeType::S)
+                .build()
+                .unwrap(),
+        )
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
         .billing_mode(BillingMode::PayPerRequest)
-        .stream_specification(StreamSpecification::builder().stream_enabled(true).stream_view_type(StreamViewType::NewAndOldImages).build().unwrap())
-        .send().await.expect("create data table");
+        .stream_specification(
+            StreamSpecification::builder()
+                .stream_enabled(true)
+                .stream_view_type(StreamViewType::NewAndOldImages)
+                .build()
+                .unwrap(),
+        )
+        .send()
+        .await
+        .expect("create data table");
 
     let stream_arn = loop {
-        let d = db.describe_table().table_name(&data_table).send().await.unwrap();
+        let d = db
+            .describe_table()
+            .table_name(&data_table)
+            .send()
+            .await
+            .unwrap();
         let t = d.table().unwrap();
         if t.table_status() == Some(&TableStatus::Active) {
             break t.latest_stream_arn().unwrap().to_string();
@@ -78,9 +106,12 @@ async fn live_worker_consumes_and_checkpoints() {
     };
 
     for i in 0..5 {
-        db.put_item().table_name(&data_table)
+        db.put_item()
+            .table_name(&data_table)
             .item("pk", AttributeValue::S(format!("k{i}")))
-            .send().await.unwrap();
+            .send()
+            .await
+            .unwrap();
     }
 
     // Run the worker; collect raw results (no asserts here so cleanup always runs).
@@ -104,7 +135,10 @@ async fn live_worker_consumes_and_checkpoints() {
         sorted.sort_by(|a, b| seq_lt(a, b));
         assert_eq!(seqs, &sorted, "shard {shard} records out of order");
     }
-    assert!(checkpoint.is_some(), "expected a lease checkpoint to be persisted");
+    assert!(
+        checkpoint.is_some(),
+        "expected a lease checkpoint to be persisted"
+    );
 }
 
 async fn run_worker(

@@ -10,7 +10,10 @@
 //! This mirrors KCL's model (one record processor per shard, concurrent) on top
 //! of the pure primitives in `core`.
 
-use crate::{eligible, AsyncLeaseStore, AsyncShardConsumer, AsyncStreamSource, ShardConsumerFactory, WorkerError};
+use crate::{
+    eligible, AsyncLeaseStore, AsyncShardConsumer, AsyncStreamSource, ShardConsumerFactory,
+    WorkerError,
+};
 use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
 use amazon_dynamodb_streams_consumer_core::ShardId;
 use std::collections::HashSet;
@@ -38,16 +41,29 @@ where
     S: AsyncStreamSource + Send + Sync + 'static,
     L: AsyncLeaseStore + Send + Sync + 'static,
 {
-    pub fn new(source: S, leases: L, factory: Arc<dyn ShardConsumerFactory>, config: FleetConfig) -> Self {
-        Self { source: Arc::new(source), leases: Arc::new(leases), factory, config }
+    pub fn new(
+        source: S,
+        leases: L,
+        factory: Arc<dyn ShardConsumerFactory>,
+        config: FleetConfig,
+    ) -> Self {
+        Self {
+            source: Arc::new(source),
+            leases: Arc::new(leases),
+            factory,
+            config,
+        }
     }
 
     /// Run coordination cycles until every shard's lease is complete or
     /// `max_cycles` is reached (drain model for a bounded/closing shard set; a
     /// long-running consumer loops [`Fleet::run_cycle`] forever with backoff).
     pub async fn run_until_complete(&self, max_cycles: usize) -> Result<(), WorkerError> {
-        let mut coordinator =
-            LeaseCoordinator::new(self.config.owner.clone(), self.config.max_leases, self.config.lease_duration_ms);
+        let mut coordinator = LeaseCoordinator::new(
+            self.config.owner.clone(),
+            self.config.max_leases,
+            self.config.lease_duration_ms,
+        );
         let start = Instant::now();
         for _ in 0..max_cycles {
             let now_ms = start.elapsed().as_millis() as u64;
@@ -112,7 +128,9 @@ where
         // 3) Run one concurrent task per owned + eligible shard.
         let mut set: JoinSet<()> = JoinSet::new();
         for meta in &shards {
-            let Some((counter, checkpoint)) = owned.get(&meta.id).cloned() else { continue };
+            let Some((counter, checkpoint)) = owned.get(&meta.id).cloned() else {
+                continue;
+            };
             if !eligible(meta, &completed) {
                 continue;
             }
@@ -143,8 +161,13 @@ where
         let owner = self.config.owner.as_str();
         let mut released = 0;
         for r in rows {
-            if r.owner.as_deref() == Some(owner) && !r.completed
-                && self.leases.release(&r.lease_key, owner, r.lease_counter).await.is_ok()
+            if r.owner.as_deref() == Some(owner)
+                && !r.completed
+                && self
+                    .leases
+                    .release(&r.lease_key, owner, r.lease_counter)
+                    .await
+                    .is_ok()
             {
                 released += 1;
             }
@@ -177,7 +200,13 @@ where
     S: AsyncStreamSource,
     L: AsyncLeaseStore,
 {
-    let ShardTask { owner, shard, mut counter, checkpoint, poll_interval_ms } = task;
+    let ShardTask {
+        owner,
+        shard,
+        mut counter,
+        checkpoint,
+        poll_interval_ms,
+    } = task;
     // Resume from the lease's persisted checkpoint (None = TRIM_HORIZON for a
     // brand-new shard). This is what makes re-processing idempotent across
     // cycles and correct across a restart. (The consumer was initialized for
@@ -225,14 +254,22 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AsyncShardConsumer, LeaseHandle, LeaseView, ShardConsumerFactory, SyncConsumerFactory};
+    use crate::{
+        AsyncShardConsumer, LeaseHandle, LeaseView, ShardConsumerFactory, SyncConsumerFactory,
+    };
     use amazon_dynamodb_streams_consumer_core::coordinator::RawLease;
-    use amazon_dynamodb_streams_consumer_core::{Record, RecordBatch, RecordProcessor, RecordProcessorFactory, ShardMeta};
+    use amazon_dynamodb_streams_consumer_core::{
+        Record, RecordBatch, RecordProcessor, RecordProcessorFactory, ShardMeta,
+    };
     use std::collections::HashMap;
     use std::sync::Mutex;
 
     fn rec(shard: &str, seq: &str) -> Record {
-        Record { shard_id: shard.into(), seq: seq.into(), data: vec![] }
+        Record {
+            shard_id: shard.into(),
+            seq: seq.into(),
+            data: vec![],
+        }
     }
 
     struct FakeSource {
@@ -244,7 +281,11 @@ mod tests {
         async fn describe_shards(&self) -> Result<Vec<ShardMeta>, WorkerError> {
             Ok(self.metas.clone())
         }
-        async fn get_records(&self, shard: &str, after: Option<String>) -> Result<RecordBatch, WorkerError> {
+        async fn get_records(
+            &self,
+            shard: &str,
+            after: Option<String>,
+        ) -> Result<RecordBatch, WorkerError> {
             let all = self.data.get(shard).cloned().unwrap_or_default();
             let records = match after {
                 None => all,
@@ -253,7 +294,10 @@ mod tests {
                     None => all,
                 },
             };
-            Ok(RecordBatch { records, shard_end: true })
+            Ok(RecordBatch {
+                records,
+                shard_end: true,
+            })
         }
     }
 
@@ -271,23 +315,35 @@ mod tests {
     #[async_trait::async_trait]
     impl AsyncLeaseStore for FakeLeases {
         async fn get(&self, key: &str) -> Result<Option<LeaseView>, WorkerError> {
-            Ok(self.rows.lock().unwrap().get(key).map(|r| LeaseView { completed: r.completed }))
+            Ok(self.rows.lock().unwrap().get(key).map(|r| LeaseView {
+                completed: r.completed,
+            }))
         }
         async fn list(&self) -> Result<Vec<RawLease>, WorkerError> {
-            Ok(self.rows.lock().unwrap().iter().map(|(k, r)| RawLease {
-                lease_key: k.clone(),
-                owner: r.owner.clone(),
-                lease_counter: r.counter,
-                completed: r.completed,
-                checkpoint: r.checkpoint.clone(),
-            }).collect())
+            Ok(self
+                .rows
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(k, r)| RawLease {
+                    lease_key: k.clone(),
+                    owner: r.owner.clone(),
+                    lease_counter: r.counter,
+                    completed: r.completed,
+                    checkpoint: r.checkpoint.clone(),
+                })
+                .collect())
         }
         async fn acquire(&self, key: &str, owner: &str) -> Result<LeaseHandle, WorkerError> {
             let mut rows = self.rows.lock().unwrap();
             let r = rows.entry(key.to_string()).or_default();
             r.owner = Some(owner.to_string());
             r.counter += 1;
-            Ok(LeaseHandle { owner: owner.to_string(), counter: r.counter, checkpoint: r.checkpoint.clone() })
+            Ok(LeaseHandle {
+                owner: owner.to_string(),
+                counter: r.counter,
+                checkpoint: r.checkpoint.clone(),
+            })
         }
         async fn renew(&self, key: &str, _o: &str, counter: u64) -> Result<u64, WorkerError> {
             let mut rows = self.rows.lock().unwrap();
@@ -295,7 +351,13 @@ mod tests {
             r.counter = counter + 1;
             Ok(r.counter)
         }
-        async fn checkpoint(&self, key: &str, _o: &str, counter: u64, _s: &str) -> Result<u64, WorkerError> {
+        async fn checkpoint(
+            &self,
+            key: &str,
+            _o: &str,
+            counter: u64,
+            _s: &str,
+        ) -> Result<u64, WorkerError> {
             let mut rows = self.rows.lock().unwrap();
             let r = rows.get_mut(key).ok_or("no lease")?;
             r.checkpoint = Some(_s.to_string());
@@ -303,7 +365,12 @@ mod tests {
             Ok(r.counter)
         }
         async fn mark_complete(&self, key: &str, _o: &str, _c: u64) -> Result<(), WorkerError> {
-            self.rows.lock().unwrap().get_mut(key).ok_or("no lease")?.completed = true;
+            self.rows
+                .lock()
+                .unwrap()
+                .get_mut(key)
+                .ok_or("no lease")?
+                .completed = true;
             Ok(())
         }
         async fn release(&self, key: &str, _o: &str, counter: u64) -> Result<(), WorkerError> {
@@ -316,22 +383,37 @@ mod tests {
     }
 
     type Sink = Arc<Mutex<HashMap<String, Vec<String>>>>;
-    struct RecordingFactory { sink: Sink }
+    struct RecordingFactory {
+        sink: Sink,
+    }
     impl RecordProcessorFactory for RecordingFactory {
         fn create(&self, _shard: &ShardId) -> Box<dyn RecordProcessor + Send> {
-            Box::new(RecordingProc { shard: String::new(), sink: self.sink.clone(), inited: false })
+            Box::new(RecordingProc {
+                shard: String::new(),
+                sink: self.sink.clone(),
+                inited: false,
+            })
         }
     }
-    struct RecordingProc { shard: String, sink: Sink, inited: bool }
+    struct RecordingProc {
+        shard: String,
+        sink: Sink,
+        inited: bool,
+    }
     impl RecordProcessor for RecordingProc {
-        fn initialize(&mut self, s: &ShardId) { self.shard = s.clone(); self.inited = true; }
+        fn initialize(&mut self, s: &ShardId) {
+            self.shard = s.clone();
+            self.inited = true;
+        }
         fn process_records(&mut self, rs: &[Record]) {
             let mut m = self.sink.lock().unwrap();
             for r in rs {
                 m.entry(self.shard.clone()).or_default().push(r.seq.clone());
             }
         }
-        fn shard_ended(&mut self, _s: &ShardId) { assert!(self.inited); }
+        fn shard_ended(&mut self, _s: &ShardId) {
+            assert!(self.inited);
+        }
     }
 
     #[tokio::test]
@@ -342,9 +424,18 @@ mod tests {
         data.insert("s2".to_string(), vec![rec("s2", "5")]);
         let source = FakeSource {
             metas: vec![
-                ShardMeta { id: "s0".into(), parents: vec![] },
-                ShardMeta { id: "s1".into(), parents: vec![] },
-                ShardMeta { id: "s2".into(), parents: vec![] },
+                ShardMeta {
+                    id: "s0".into(),
+                    parents: vec![],
+                },
+                ShardMeta {
+                    id: "s1".into(),
+                    parents: vec![],
+                },
+                ShardMeta {
+                    id: "s2".into(),
+                    parents: vec![],
+                },
             ],
             data,
         };
@@ -354,7 +445,12 @@ mod tests {
             source,
             FakeLeases::default(),
             Arc::new(SyncConsumerFactory::new(factory)),
-            FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 1000, poll_interval_ms: 1 },
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 1000,
+                poll_interval_ms: 1,
+            },
         );
 
         fleet.run_until_complete(10).await.unwrap();
@@ -373,8 +469,14 @@ mod tests {
         data.insert("c".to_string(), vec![rec("c", "2")]);
         let source = FakeSource {
             metas: vec![
-                ShardMeta { id: "c".into(), parents: vec!["p".into()] },
-                ShardMeta { id: "p".into(), parents: vec![] },
+                ShardMeta {
+                    id: "c".into(),
+                    parents: vec!["p".into()],
+                },
+                ShardMeta {
+                    id: "p".into(),
+                    parents: vec![],
+                },
             ],
             data,
         };
@@ -384,7 +486,12 @@ mod tests {
             source,
             FakeLeases::default(),
             Arc::new(SyncConsumerFactory::new(factory)),
-            FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 1000, poll_interval_ms: 1 },
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 1000,
+                poll_interval_ms: 1,
+            },
         );
         fleet.run_until_complete(10).await.unwrap();
         let m = sink.lock().unwrap();
@@ -401,9 +508,16 @@ mod tests {
     #[async_trait::async_trait]
     impl AsyncStreamSource for OpenSource {
         async fn describe_shards(&self) -> Result<Vec<ShardMeta>, WorkerError> {
-            Ok(vec![ShardMeta { id: "s0".into(), parents: vec![] }])
+            Ok(vec![ShardMeta {
+                id: "s0".into(),
+                parents: vec![],
+            }])
         }
-        async fn get_records(&self, _shard: &str, after: Option<String>) -> Result<RecordBatch, WorkerError> {
+        async fn get_records(
+            &self,
+            _shard: &str,
+            after: Option<String>,
+        ) -> Result<RecordBatch, WorkerError> {
             let records = match after {
                 None => self.records.clone(),
                 Some(tok) => match self.records.iter().position(|r| r.seq == tok) {
@@ -411,7 +525,10 @@ mod tests {
                     None => self.records.clone(),
                 },
             };
-            Ok(RecordBatch { records, shard_end: false })
+            Ok(RecordBatch {
+                records,
+                shard_end: false,
+            })
         }
     }
 
@@ -421,14 +538,21 @@ mod tests {
         // records already past the persisted checkpoint. This is the correctness
         // guarantee that also holds across a process restart (the checkpoint lives
         // in the lease table, not in memory).
-        let source = OpenSource { records: vec![rec("s0", "1"), rec("s0", "2"), rec("s0", "3")] };
+        let source = OpenSource {
+            records: vec![rec("s0", "1"), rec("s0", "2"), rec("s0", "3")],
+        };
         let sink: Sink = Arc::new(Mutex::new(HashMap::new()));
         let factory = Arc::new(RecordingFactory { sink: sink.clone() });
         let fleet = Fleet::new(
             source,
             FakeLeases::default(),
             Arc::new(SyncConsumerFactory::new(factory)),
-            FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 100_000, poll_interval_ms: 1 },
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 100_000,
+                poll_interval_ms: 1,
+            },
         );
 
         // Run several cycles; the shard stays open so it's revisited each cycle.
@@ -450,7 +574,10 @@ mod tests {
     }
     impl ShardConsumerFactory for NoAckFactory {
         fn create(&self, shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send> {
-            Box::new(NoAckConsumer { shard: shard.clone(), sink: self.sink.clone() })
+            Box::new(NoAckConsumer {
+                shard: shard.clone(),
+                sink: self.sink.clone(),
+            })
         }
     }
     struct NoAckConsumer {
@@ -478,14 +605,21 @@ mod tests {
         // cycles the same 3 records are re-delivered — proving the None path
         // holds the lease but does NOT persist progress (the safe, at-least-once
         // behavior a stuck/slow client would produce).
-        let source = OpenSource { records: vec![rec("s0", "1"), rec("s0", "2"), rec("s0", "3")] };
+        let source = OpenSource {
+            records: vec![rec("s0", "1"), rec("s0", "2"), rec("s0", "3")],
+        };
         let sink: Sink = Arc::new(Mutex::new(HashMap::new()));
         let factory = Arc::new(NoAckFactory { sink: sink.clone() });
         let fleet = Fleet::new(
             source,
             FakeLeases::default(),
             factory,
-            FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 100_000, poll_interval_ms: 1 },
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 100_000,
+                poll_interval_ms: 1,
+            },
         );
 
         fleet.run_until_complete(3).await.unwrap();
@@ -500,20 +634,54 @@ mod tests {
 
     #[tokio::test]
     async fn release_owned_clears_our_leases_for_fast_failover() {
-        let source = FakeSource { metas: vec![], data: HashMap::new() };
+        let source = FakeSource {
+            metas: vec![],
+            data: HashMap::new(),
+        };
         let leases = FakeLeases::default();
         {
             let mut rows = leases.rows.lock().unwrap();
-            rows.insert("mine".into(), State { owner: Some("w1".into()), counter: 3, completed: false, checkpoint: None });
-            rows.insert("theirs".into(), State { owner: Some("w2".into()), counter: 1, completed: false, checkpoint: None });
-            rows.insert("done".into(), State { owner: Some("w1".into()), counter: 5, completed: true, checkpoint: None });
+            rows.insert(
+                "mine".into(),
+                State {
+                    owner: Some("w1".into()),
+                    counter: 3,
+                    completed: false,
+                    checkpoint: None,
+                },
+            );
+            rows.insert(
+                "theirs".into(),
+                State {
+                    owner: Some("w2".into()),
+                    counter: 1,
+                    completed: false,
+                    checkpoint: None,
+                },
+            );
+            rows.insert(
+                "done".into(),
+                State {
+                    owner: Some("w1".into()),
+                    counter: 5,
+                    completed: true,
+                    checkpoint: None,
+                },
+            );
         }
         let sink: Sink = Arc::new(Mutex::new(HashMap::new()));
         let fleet = Fleet::new(
             source,
             leases,
-            Arc::new(SyncConsumerFactory::new(Arc::new(RecordingFactory { sink }))),
-            FleetConfig { owner: "w1".into(), max_leases: 100, lease_duration_ms: 1000, poll_interval_ms: 1 },
+            Arc::new(SyncConsumerFactory::new(Arc::new(RecordingFactory {
+                sink,
+            }))),
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 1000,
+                poll_interval_ms: 1,
+            },
         );
 
         let released = fleet.release_owned().await.unwrap();
@@ -521,8 +689,18 @@ mod tests {
 
         let rows = fleet.leases.rows.lock().unwrap();
         assert!(rows["mine"].owner.is_none(), "our lease is now unowned");
-        assert_eq!(rows["mine"].counter, 4, "counter bumped under the optimistic lock");
-        assert_eq!(rows["theirs"].owner.as_deref(), Some("w2"), "another worker's lease untouched");
-        assert!(rows["done"].owner.is_some(), "a completed lease is not released");
+        assert_eq!(
+            rows["mine"].counter, 4,
+            "counter bumped under the optimistic lock"
+        );
+        assert_eq!(
+            rows["theirs"].owner.as_deref(),
+            Some("w2"),
+            "another worker's lease untouched"
+        );
+        assert!(
+            rows["done"].owner.is_some(),
+            "a completed lease is not released"
+        );
     }
 }

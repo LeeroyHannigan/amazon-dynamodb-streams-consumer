@@ -53,7 +53,10 @@ mod tests {
     fn round_trips_a_plain_stream_name() {
         let key = multi_stream_lease_key("orders-stream", "shardId-000001-abcd");
         assert_eq!(key, "orders-stream:shardId-000001-abcd");
-        assert_eq!(parse_lease_key(&key), Some(("orders-stream", "shardId-000001-abcd")));
+        assert_eq!(
+            parse_lease_key(&key),
+            Some(("orders-stream", "shardId-000001-abcd"))
+        );
         assert_eq!(shard_of(&key), "shardId-000001-abcd");
     }
 
@@ -62,7 +65,8 @@ mod tests {
         // A real DynamoDB Streams ARN: colons in region/account AND in the
         // ISO-8601 creation timestamp. Splitting on the last colon must still
         // recover the ARN and the shard id exactly.
-        let arn = "arn:aws:dynamodb:us-east-1:123456789012:table/Orders/stream/2026-07-01T21:52:30.123";
+        let arn =
+            "arn:aws:dynamodb:us-east-1:123456789012:table/Orders/stream/2026-07-01T21:52:30.123";
         let shard = "shardId-00000001600000000000-a1b2c3d4";
         let key = multi_stream_lease_key(arn, shard);
         let (stream, got_shard) = parse_lease_key(&key).unwrap();
@@ -86,6 +90,9 @@ mod tests {
         let shard = "shardId-000001";
         let a = multi_stream_lease_key("stream-A", shard);
         let b = multi_stream_lease_key("stream-B", shard);
-        assert_ne!(a, b, "same shard id under different streams yields distinct keys");
+        assert_ne!(
+            a, b,
+            "same shard id under different streams yields distinct keys"
+        );
     }
 }

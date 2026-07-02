@@ -11,8 +11,8 @@
 //! engine + async traits are always built and unit-tested with in-memory fakes;
 //! the concrete AWS trait impls live in the `aws` module behind the `aws` feature.
 
-use amazon_dynamodb_streams_consumer_core::{RecordBatch, RecordProcessor, ShardId, ShardMeta};
 use amazon_dynamodb_streams_consumer_core::coordinator::RawLease;
+use amazon_dynamodb_streams_consumer_core::{RecordBatch, RecordProcessor, ShardId, ShardMeta};
 use std::collections::HashSet;
 
 #[cfg(feature = "aws")]
@@ -106,7 +106,9 @@ pub struct SyncConsumerFactory {
 }
 
 impl SyncConsumerFactory {
-    pub fn new(inner: std::sync::Arc<dyn amazon_dynamodb_streams_consumer_core::RecordProcessorFactory>) -> Self {
+    pub fn new(
+        inner: std::sync::Arc<dyn amazon_dynamodb_streams_consumer_core::RecordProcessorFactory>,
+    ) -> Self {
         Self { inner }
     }
 }
@@ -115,7 +117,10 @@ impl ShardConsumerFactory for SyncConsumerFactory {
     fn create(&self, shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send> {
         let mut processor = self.inner.create(shard);
         processor.initialize(shard);
-        Box::new(SyncConsumer { processor, shard: shard.clone() })
+        Box::new(SyncConsumer {
+            processor,
+            shard: shard.clone(),
+        })
     }
 }
 
@@ -147,7 +152,11 @@ pub struct Worker<S, L> {
 
 impl<S: AsyncStreamSource, L: AsyncLeaseStore> Worker<S, L> {
     pub fn new(source: S, leases: L, owner: impl Into<String>) -> Self {
-        Self { source, leases, owner: owner.into() }
+        Self {
+            source,
+            leases,
+            owner: owner.into(),
+        }
     }
 
     /// Drive all shards to completion in dependency order. Returns when every
@@ -247,7 +256,11 @@ mod tests {
     use std::sync::Mutex;
 
     fn rec(shard: &str, seq: &str) -> Record {
-        Record { shard_id: shard.into(), seq: seq.into(), data: vec![] }
+        Record {
+            shard_id: shard.into(),
+            seq: seq.into(),
+            data: vec![],
+        }
     }
 
     struct FakeSource {
@@ -259,7 +272,11 @@ mod tests {
         async fn describe_shards(&self) -> Result<Vec<ShardMeta>, WorkerError> {
             Ok(self.metas.clone())
         }
-        async fn get_records(&self, shard: &str, after: Option<String>) -> Result<RecordBatch, WorkerError> {
+        async fn get_records(
+            &self,
+            shard: &str,
+            after: Option<String>,
+        ) -> Result<RecordBatch, WorkerError> {
             let all = self.data.get(shard).cloned().unwrap_or_default();
             let records = match after {
                 None => all,
@@ -268,7 +285,10 @@ mod tests {
                     None => all,
                 },
             };
-            Ok(RecordBatch { records, shard_end: true })
+            Ok(RecordBatch {
+                records,
+                shard_end: true,
+            })
         }
     }
 
@@ -286,7 +306,9 @@ mod tests {
     #[async_trait::async_trait]
     impl AsyncLeaseStore for FakeLeases {
         async fn get(&self, key: &str) -> Result<Option<LeaseView>, WorkerError> {
-            Ok(self.rows.lock().unwrap().get(key).map(|r| LeaseView { completed: r.completed }))
+            Ok(self.rows.lock().unwrap().get(key).map(|r| LeaseView {
+                completed: r.completed,
+            }))
         }
         async fn list(&self) -> Result<Vec<RawLease>, WorkerError> {
             Ok(self
@@ -314,17 +336,37 @@ mod tests {
             let r = rows.entry(key.to_string()).or_default();
             r.owner = Some(owner.to_string());
             r.counter += 1;
-            Ok(LeaseHandle { owner: owner.to_string(), counter: r.counter, checkpoint: r.checkpoint.clone() })
+            Ok(LeaseHandle {
+                owner: owner.to_string(),
+                counter: r.counter,
+                checkpoint: r.checkpoint.clone(),
+            })
         }
-        async fn checkpoint(&self, key: &str, _owner: &str, counter: u64, seq: &str) -> Result<u64, WorkerError> {
+        async fn checkpoint(
+            &self,
+            key: &str,
+            _owner: &str,
+            counter: u64,
+            seq: &str,
+        ) -> Result<u64, WorkerError> {
             let mut rows = self.rows.lock().unwrap();
             let r = rows.get_mut(key).ok_or("no lease")?;
             r.checkpoint = Some(seq.to_string());
             r.counter = counter + 1;
             Ok(r.counter)
         }
-        async fn mark_complete(&self, key: &str, _owner: &str, _counter: u64) -> Result<(), WorkerError> {
-            self.rows.lock().unwrap().get_mut(key).ok_or("no lease")?.completed = true;
+        async fn mark_complete(
+            &self,
+            key: &str,
+            _owner: &str,
+            _counter: u64,
+        ) -> Result<(), WorkerError> {
+            self.rows
+                .lock()
+                .unwrap()
+                .get_mut(key)
+                .ok_or("no lease")?
+                .completed = true;
             Ok(())
         }
         async fn release(&self, key: &str, _owner: &str, counter: u64) -> Result<(), WorkerError> {
@@ -341,22 +383,37 @@ mod tests {
         events: Vec<String>,
     }
     impl RecordProcessor for RecordingProcessor {
-        fn initialize(&mut self, s: &ShardId) { self.events.push(format!("init:{s}")); }
-        fn process_records(&mut self, rs: &[Record]) {
-            for r in rs { self.events.push(format!("rec:{}:{}", r.shard_id, r.seq)); }
+        fn initialize(&mut self, s: &ShardId) {
+            self.events.push(format!("init:{s}"));
         }
-        fn shard_ended(&mut self, s: &ShardId) { self.events.push(format!("end:{s}")); }
+        fn process_records(&mut self, rs: &[Record]) {
+            for r in rs {
+                self.events.push(format!("rec:{}:{}", r.shard_id, r.seq));
+            }
+        }
+        fn shard_ended(&mut self, s: &ShardId) {
+            self.events.push(format!("end:{s}"));
+        }
     }
 
     #[tokio::test]
     async fn worker_preserves_parent_before_child_and_checkpoints() {
         let mut data = HashMap::new();
-        data.insert("parent".to_string(), vec![rec("parent", "1"), rec("parent", "2")]);
+        data.insert(
+            "parent".to_string(),
+            vec![rec("parent", "1"), rec("parent", "2")],
+        );
         data.insert("child".to_string(), vec![rec("child", "3")]);
         let source = FakeSource {
             metas: vec![
-                ShardMeta { id: "child".into(), parents: vec!["parent".into()] },
-                ShardMeta { id: "parent".into(), parents: vec![] },
+                ShardMeta {
+                    id: "child".into(),
+                    parents: vec!["parent".into()],
+                },
+                ShardMeta {
+                    id: "parent".into(),
+                    parents: vec![],
+                },
             ],
             data,
         };
@@ -368,8 +425,13 @@ mod tests {
         assert_eq!(
             proc.events,
             vec![
-                "init:parent", "rec:parent:1", "rec:parent:2", "end:parent",
-                "init:child", "rec:child:3", "end:child",
+                "init:parent",
+                "rec:parent:1",
+                "rec:parent:2",
+                "end:parent",
+                "init:child",
+                "rec:child:3",
+                "end:child",
             ]
         );
         // Lease checkpoint persisted for the child's last record.
@@ -381,15 +443,26 @@ mod tests {
     #[tokio::test]
     async fn worker_resumes_from_existing_checkpoint() {
         let mut data = HashMap::new();
-        data.insert("s".to_string(), vec![rec("s", "10"), rec("s", "11"), rec("s", "12")]);
+        data.insert(
+            "s".to_string(),
+            vec![rec("s", "10"), rec("s", "11"), rec("s", "12")],
+        );
         let source = FakeSource {
-            metas: vec![ShardMeta { id: "s".into(), parents: vec![] }],
+            metas: vec![ShardMeta {
+                id: "s".into(),
+                parents: vec![],
+            }],
             data,
         };
         let leases = FakeLeases::default();
         leases.rows.lock().unwrap().insert(
             "s".into(),
-            FakeLeaseState { owner: None, counter: 3, checkpoint: Some("11".into()), completed: false },
+            FakeLeaseState {
+                owner: None,
+                counter: 3,
+                checkpoint: Some("11".into()),
+                completed: false,
+            },
         );
         let worker = Worker::new(source, leases, "w1");
         let mut proc = RecordingProcessor::default();

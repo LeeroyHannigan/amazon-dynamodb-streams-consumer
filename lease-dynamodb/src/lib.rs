@@ -60,7 +60,12 @@ mod tests {
 
     #[test]
     fn unowned_lease_is_takeable() {
-        let l = Lease { lease_key: "s".into(), lease_owner: None, lease_counter: 7, ..Default::default() };
+        let l = Lease {
+            lease_key: "s".into(),
+            lease_owner: None,
+            lease_counter: 7,
+            ..Default::default()
+        };
         assert!(l.is_takeable(7));
         assert!(l.is_takeable(0));
     }

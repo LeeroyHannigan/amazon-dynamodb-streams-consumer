@@ -53,10 +53,18 @@ mod from_sdk {
             event_name,
             sequence_number: sr.and_then(|d| d.sequence_number()).map(|s| s.to_string()),
             size_bytes: sr.and_then(|d| d.size_bytes()),
-            stream_view_type: sr.and_then(|d| d.stream_view_type()).map(|v| v.as_str().to_string()),
+            stream_view_type: sr
+                .and_then(|d| d.stream_view_type())
+                .map(|v| v.as_str().to_string()),
             keys: sr.and_then(|d| d.keys()).map(map_btree).unwrap_or_default(),
-            new_image: sr.and_then(|d| d.new_image()).filter(|m| !m.is_empty()).map(map_btree),
-            old_image: sr.and_then(|d| d.old_image()).filter(|m| !m.is_empty()).map(map_btree),
+            new_image: sr
+                .and_then(|d| d.new_image())
+                .filter(|m| !m.is_empty())
+                .map(map_btree),
+            old_image: sr
+                .and_then(|d| d.old_image())
+                .filter(|m| !m.is_empty())
+                .map(map_btree),
         }
     }
 
@@ -65,8 +73,8 @@ mod from_sdk {
         use super::super::{AttrValue, StreamRecord};
         use aws_sdk_dynamodbstreams::primitives::Blob;
         use aws_sdk_dynamodbstreams::types::{
-            AttributeValue as Sdk, OperationType, Record as SdkRecord, StreamRecord as SdkStreamRecord,
-            StreamViewType,
+            AttributeValue as Sdk, OperationType, Record as SdkRecord,
+            StreamRecord as SdkStreamRecord, StreamViewType,
         };
         use std::collections::HashMap;
 
@@ -83,7 +91,10 @@ mod from_sdk {
             keys.insert("null".to_string(), Sdk::Null(true));
             keys.insert("b".to_string(), Sdk::B(Blob::new(vec![1u8, 2, 3])));
             keys.insert("m".to_string(), Sdk::M(m));
-            keys.insert("l".to_string(), Sdk::L(vec![Sdk::S("a".into()), Sdk::Null(true)]));
+            keys.insert(
+                "l".to_string(),
+                Sdk::L(vec![Sdk::S("a".into()), Sdk::Null(true)]),
+            );
             keys.insert("ss".to_string(), Sdk::Ss(vec!["x".into(), "y".into()]));
             keys.insert("ns".to_string(), Sdk::Ns(vec!["1".into(), "2".into()]));
             keys.insert("bs".to_string(), Sdk::Bs(vec![Blob::new(vec![9u8])]));
@@ -114,11 +125,19 @@ mod from_sdk {
             assert_eq!(out.keys.get("bool"), Some(&AttrValue::Bool(true)));
             assert_eq!(out.keys.get("null"), Some(&AttrValue::Null));
             assert_eq!(out.keys.get("b"), Some(&AttrValue::B(vec![1, 2, 3])));
-            assert_eq!(out.keys.get("ss"), Some(&AttrValue::Ss(vec!["x".into(), "y".into()])));
-            assert_eq!(out.keys.get("ns"), Some(&AttrValue::Ns(vec!["1".into(), "2".into()])));
+            assert_eq!(
+                out.keys.get("ss"),
+                Some(&AttrValue::Ss(vec!["x".into(), "y".into()]))
+            );
+            assert_eq!(
+                out.keys.get("ns"),
+                Some(&AttrValue::Ns(vec!["1".into(), "2".into()]))
+            );
             assert_eq!(out.keys.get("bs"), Some(&AttrValue::Bs(vec![vec![9]])));
             match out.keys.get("m") {
-                Some(AttrValue::M(inner)) => assert_eq!(inner.get("inner"), Some(&AttrValue::N("7".into()))),
+                Some(AttrValue::M(inner)) => {
+                    assert_eq!(inner.get("inner"), Some(&AttrValue::N("7".into())))
+                }
                 other => panic!("expected M, got {other:?}"),
             }
             match out.keys.get("l") {

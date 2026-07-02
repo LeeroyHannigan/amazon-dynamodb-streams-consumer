@@ -77,7 +77,10 @@ impl LeaseCoordinator {
                 None => {
                     self.seen.insert(
                         r.lease_key.clone(),
-                        Seen { counter: r.lease_counter, last_change_ms: now_ms },
+                        Seen {
+                            counter: r.lease_counter,
+                            last_change_ms: now_ms,
+                        },
                     );
                 }
             }
@@ -92,8 +95,8 @@ impl LeaseCoordinator {
 
     fn is_expired(&self, r: &RawLease, now_ms: u64) -> bool {
         match &r.owner {
-            None => false,                      // unowned → available, not "expired"
-            Some(o) if o == &self.me => false,  // mine
+            None => false,                     // unowned → available, not "expired"
+            Some(o) if o == &self.me => false, // mine
             Some(_) => match self.seen.get(&r.lease_key) {
                 // Counter advanced since we last saw it → owner is alive.
                 Some(s) if r.lease_counter != s.counter => false,
@@ -114,7 +117,13 @@ mod tests {
     const DUR: u64 = 1000;
 
     fn row(key: &str, owner: Option<&str>, counter: u64, completed: bool) -> RawLease {
-        RawLease { lease_key: key.into(), owner: owner.map(|o| o.into()), lease_counter: counter, completed, checkpoint: None }
+        RawLease {
+            lease_key: key.into(),
+            owner: owner.map(|o| o.into()),
+            lease_counter: counter,
+            completed,
+            checkpoint: None,
+        }
     }
 
     // Balanced by count (w1: a,b; w2: c,d) so load-balancing never triggers —
@@ -177,7 +186,9 @@ mod tests {
         let mut c = LeaseCoordinator::new("w1", 10, DUR);
         c.tick(&[row("x", Some("w2"), 5, false)], 0);
         c.tick(&[], DUR + 1); // x gone → freshness forgotten
-        // x reappears far in the future → fresh first-sighting → not expired.
-        assert!(c.tick(&[row("x", Some("w2"), 5, false)], DUR * 100).is_empty());
+                              // x reappears far in the future → fresh first-sighting → not expired.
+        assert!(c
+            .tick(&[row("x", Some("w2"), 5, false)], DUR * 100)
+            .is_empty());
     }
 }

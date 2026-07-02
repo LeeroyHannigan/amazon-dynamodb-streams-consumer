@@ -11,12 +11,12 @@
 //!   DDB_STREAMS_CONSUMER_IT=1 AWS_REGION=us-east-1 cargo test -p amazon-dynamodb-streams-consumer-sidecar \
 //!     --test live_sidecar -- --nocapture
 
+use amazon_dynamodb_streams_consumer_protocol::{ClientMessage, ServerMessage};
 use aws_sdk_dynamodb as ddb;
 use ddb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType, StreamSpecification, StreamViewType, TableStatus,
 };
-use amazon_dynamodb_streams_consumer_protocol::{ClientMessage, ServerMessage};
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -45,7 +45,13 @@ async fn live_sidecar_streams_records_and_checkpoints() {
                 .build()
                 .unwrap(),
         )
-        .key_schema(KeySchemaElement::builder().attribute_name("pk").key_type(KeyType::Hash).build().unwrap())
+        .key_schema(
+            KeySchemaElement::builder()
+                .attribute_name("pk")
+                .key_type(KeyType::Hash)
+                .build()
+                .unwrap(),
+        )
         .billing_mode(BillingMode::PayPerRequest)
         .stream_specification(
             StreamSpecification::builder()
@@ -59,7 +65,12 @@ async fn live_sidecar_streams_records_and_checkpoints() {
         .expect("create data table");
 
     let stream_arn = loop {
-        let d = db.describe_table().table_name(&data_table).send().await.unwrap();
+        let d = db
+            .describe_table()
+            .table_name(&data_table)
+            .send()
+            .await
+            .unwrap();
         let t = d.table().unwrap();
         if t.table_status() == Some(&TableStatus::Active) {
             break t.latest_stream_arn().unwrap().to_string();
@@ -85,8 +96,14 @@ async fn live_sidecar_streams_records_and_checkpoints() {
 
     let (total, with_payload, shards) = result.expect("sidecar client run");
     eprintln!("sidecar delivered {total} record(s) across {shards} shard(s); {with_payload} carried a pk payload");
-    assert!(total >= 5, "expected >= 5 records from the sidecar, got {total}");
-    assert!(with_payload >= 5, "expected typed payloads (pk key) on all records, got {with_payload}");
+    assert!(
+        total >= 5,
+        "expected >= 5 records from the sidecar, got {total}"
+    );
+    assert!(
+        with_payload >= 5,
+        "expected typed payloads (pk key) on all records, got {with_payload}"
+    );
 }
 
 /// Spawn the compiled sidecar and behave as the language client: read `records`,
@@ -134,11 +151,18 @@ async fn run_client(
             continue;
         }
         match ServerMessage::parse(&line) {
-            Ok(ServerMessage::Records { shard, last_seq, records }) => {
+            Ok(ServerMessage::Records {
+                shard,
+                last_seq,
+                records,
+            }) => {
                 total += records.len();
                 with_payload += records.iter().filter(|r| r.keys.contains_key("pk")).count();
                 shards.insert(shard.clone());
-                let ack = ClientMessage::Checkpoint { shard, seq: last_seq };
+                let ack = ClientMessage::Checkpoint {
+                    shard,
+                    seq: last_seq,
+                };
                 stdin.write_all(ack.to_line().as_bytes()).await?;
                 stdin.flush().await?;
             }
@@ -148,7 +172,9 @@ async fn run_client(
     }
 
     // Ask the sidecar to stop, then ensure the process exits.
-    let _ = stdin.write_all(ClientMessage::Stop.to_line().as_bytes()).await;
+    let _ = stdin
+        .write_all(ClientMessage::Stop.to_line().as_bytes())
+        .await;
     let _ = stdin.flush().await;
     drop(stdin);
     let _ = tokio::time::timeout(Duration::from_secs(5), child.wait()).await;

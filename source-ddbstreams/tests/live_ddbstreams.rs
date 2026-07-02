@@ -11,13 +11,13 @@
 //!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-source \
 //!     --features aws --test live_ddbstreams -- --nocapture
 
+use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
 use aws_sdk_dynamodb as ddb;
 use aws_sdk_dynamodbstreams as streams;
 use ddb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType, StreamSpecification, StreamViewType, TableStatus,
 };
-use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
 use std::time::Duration;
 
 #[tokio::test]
@@ -93,12 +93,17 @@ async fn live_read_ordered_records() {
     let (total, payload_ok) = result.expect("read from stream");
     eprintln!("read {total} records from the stream (payload_ok={payload_ok})");
     assert!(total >= 5, "expected >= 5 records, got {total}");
-    assert!(payload_ok, "expected record payload to decode with the 'pk' key");
+    assert!(
+        payload_ok,
+        "expected record payload to decode with the 'pk' key"
+    );
 }
 
 /// Discover shards via the adapter and drain records from the root shard(s),
 /// retrying because stream records lag writes by a moment.
-async fn run_read(source: &DdbStreamsSource) -> Result<(usize, bool), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_read(
+    source: &DdbStreamsSource,
+) -> Result<(usize, bool), Box<dyn std::error::Error + Send + Sync>> {
     use amazon_dynamodb_streams_consumer_source::record::StreamRecord;
     // Retry describe until at least one shard shows up.
     let mut shards = Vec::new();

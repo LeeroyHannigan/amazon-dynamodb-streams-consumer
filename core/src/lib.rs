@@ -12,12 +12,12 @@
 //! testable with zero network. The real DDB Streams / DynamoDB adapters are
 //! added as implementors of these traits.
 
-pub mod taker;
-pub mod coordinator;
-pub mod cleanup;
-pub mod multistream;
 pub mod backoff;
+pub mod cleanup;
+pub mod coordinator;
+pub mod multistream;
 pub mod record;
+pub mod taker;
 
 pub type ShardId = String;
 /// DynamoDB Streams sequence number. This is an **opaque, monotonically
@@ -189,7 +189,10 @@ mod tests {
                     None => all, // token not found → from start
                 },
             };
-            RecordBatch { records, shard_end: true }
+            RecordBatch {
+                records,
+                shard_end: true,
+            }
         }
     }
 
@@ -232,7 +235,11 @@ mod tests {
     }
 
     fn rec(shard: &str, seq: &str) -> Record {
-        Record { shard_id: shard.to_string(), seq: seq.to_string(), data: vec![] }
+        Record {
+            shard_id: shard.to_string(),
+            seq: seq.to_string(),
+            data: vec![],
+        }
     }
 
     /// SPIKE SUCCESS CRITERION: a parent shard splits into a child; the engine
@@ -241,14 +248,26 @@ mod tests {
     #[test]
     fn parent_before_child_ordering() {
         let mut data = HashMap::new();
-        data.insert("shard-parent".to_string(), vec![rec("shard-parent", "1"), rec("shard-parent", "2")]);
-        data.insert("shard-child".to_string(), vec![rec("shard-child", "3"), rec("shard-child", "4")]);
+        data.insert(
+            "shard-parent".to_string(),
+            vec![rec("shard-parent", "1"), rec("shard-parent", "2")],
+        );
+        data.insert(
+            "shard-child".to_string(),
+            vec![rec("shard-child", "3"), rec("shard-child", "4")],
+        );
 
         let source = InMemSource {
             metas: vec![
                 // Deliberately list child first to prove ordering isn't just list order.
-                ShardMeta { id: "shard-child".into(), parents: vec!["shard-parent".into()] },
-                ShardMeta { id: "shard-parent".into(), parents: vec![] },
+                ShardMeta {
+                    id: "shard-child".into(),
+                    parents: vec!["shard-parent".into()],
+                },
+                ShardMeta {
+                    id: "shard-parent".into(),
+                    parents: vec![],
+                },
             ],
             data,
         };
@@ -277,9 +296,15 @@ mod tests {
     #[test]
     fn per_shard_sequence_order() {
         let mut data = HashMap::new();
-        data.insert("s".to_string(), vec![rec("s", "10"), rec("s", "11"), rec("s", "12")]);
+        data.insert(
+            "s".to_string(),
+            vec![rec("s", "10"), rec("s", "11"), rec("s", "12")],
+        );
         let source = InMemSource {
-            metas: vec![ShardMeta { id: "s".into(), parents: vec![] }],
+            metas: vec![ShardMeta {
+                id: "s".into(),
+                parents: vec![],
+            }],
             data,
         };
         let mut proc = RecordingProcessor::default();
@@ -304,9 +329,18 @@ mod tests {
 
         let source = InMemSource {
             metas: vec![
-                ShardMeta { id: "child".into(), parents: vec!["p-a".into(), "p-b".into()] },
-                ShardMeta { id: "p-a".into(), parents: vec![] },
-                ShardMeta { id: "p-b".into(), parents: vec![] },
+                ShardMeta {
+                    id: "child".into(),
+                    parents: vec!["p-a".into(), "p-b".into()],
+                },
+                ShardMeta {
+                    id: "p-a".into(),
+                    parents: vec![],
+                },
+                ShardMeta {
+                    id: "p-b".into(),
+                    parents: vec![],
+                },
             ],
             data,
         };
@@ -320,7 +354,11 @@ mod tests {
         let end_b = pos("end:p-b");
         let child_init = pos("init:child");
         let child_rec = pos("rec:child:5");
-        assert!(child_init > end_a && child_init > end_b, "child before both parents ended: {:?}", proc.events);
+        assert!(
+            child_init > end_a && child_init > end_b,
+            "child before both parents ended: {:?}",
+            proc.events
+        );
         assert!(child_rec > child_init);
         assert!(pos("rec:p-a:1") < pos("rec:p-a:2") && pos("rec:p-a:2") < end_a);
         assert!(pos("rec:p-b:3") < pos("rec:p-b:4") && pos("rec:p-b:4") < end_b);
@@ -336,9 +374,18 @@ mod tests {
         data.insert("g2".to_string(), vec![rec("g2", "3")]);
         let source = InMemSource {
             metas: vec![
-                ShardMeta { id: "g2".into(), parents: vec!["g1".into()] },
-                ShardMeta { id: "g1".into(), parents: vec!["g0".into()] },
-                ShardMeta { id: "g0".into(), parents: vec![] },
+                ShardMeta {
+                    id: "g2".into(),
+                    parents: vec!["g1".into()],
+                },
+                ShardMeta {
+                    id: "g1".into(),
+                    parents: vec!["g0".into()],
+                },
+                ShardMeta {
+                    id: "g0".into(),
+                    parents: vec![],
+                },
             ],
             data,
         };
@@ -348,9 +395,8 @@ mod tests {
         assert_eq!(
             proc.events,
             vec![
-                "init:g0", "rec:g0:1", "end:g0",
-                "init:g1", "rec:g1:2", "end:g1",
-                "init:g2", "rec:g2:3", "end:g2",
+                "init:g0", "rec:g0:1", "end:g0", "init:g1", "rec:g1:2", "end:g1", "init:g2",
+                "rec:g2:3", "end:g2",
             ]
         );
     }
@@ -360,9 +406,15 @@ mod tests {
     #[test]
     fn resumes_after_checkpoint() {
         let mut data = HashMap::new();
-        data.insert("s".to_string(), vec![rec("s", "10"), rec("s", "11"), rec("s", "12")]);
+        data.insert(
+            "s".to_string(),
+            vec![rec("s", "10"), rec("s", "11"), rec("s", "12")],
+        );
         let source = InMemSource {
-            metas: vec![ShardMeta { id: "s".into(), parents: vec![] }],
+            metas: vec![ShardMeta {
+                id: "s".into(),
+                parents: vec![],
+            }],
             data,
         };
         let mut leases = InMemLeases::default();

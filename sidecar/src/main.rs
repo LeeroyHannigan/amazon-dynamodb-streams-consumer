@@ -41,7 +41,10 @@ impl Config {
     fn from_env() -> Result<Self, String> {
         let req = |k: &str| std::env::var(k).map_err(|_| format!("missing required env var {k}"));
         let opt_u64 = |k: &str, d: u64| {
-            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
         };
         let owner = std::env::var("DDB_STREAMS_CONSUMER_OWNER").unwrap_or_else(|_| {
             let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "host".into());
@@ -189,7 +192,11 @@ mod tests {
         assert_eq!(c.lease_duration_ms, 10_000);
         assert_eq!(c.poll_interval_ms, 1_000);
         assert_eq!(c.cycle_interval_ms, 1_000);
-        assert!(c.owner.starts_with("host7:"), "owner defaults to <host>:<pid>, got {}", c.owner);
+        assert!(
+            c.owner.starts_with("host7:"),
+            "owner defaults to <host>:<pid>, got {}",
+            c.owner
+        );
         clear();
     }
 

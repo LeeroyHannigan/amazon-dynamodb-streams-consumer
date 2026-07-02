@@ -82,9 +82,13 @@ mod tests {
         let mut b = PollBackoff::new(250, 1_000, 5_000);
         b.next_sleep_ms(false); // 1000
         b.next_sleep_ms(false); // 2000
-        // A record arrives → reset. Next idle starts from the base again.
+                                // A record arrives → reset. Next idle starts from the base again.
         assert_eq!(b.next_sleep_ms(true), 250);
-        assert_eq!(b.next_sleep_ms(false), 1_000, "idle base restored after data");
+        assert_eq!(
+            b.next_sleep_ms(false),
+            1_000,
+            "idle base restored after data"
+        );
     }
 
     #[test]

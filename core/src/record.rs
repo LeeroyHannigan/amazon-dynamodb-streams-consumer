@@ -76,7 +76,10 @@ mod tests {
             "nested".into(),
             AttrValue::M(BTreeMap::from([
                 ("count".to_string(), AttrValue::N("3".into())),
-                ("list".to_string(), AttrValue::L(vec![AttrValue::Null, AttrValue::S("x".into())])),
+                (
+                    "list".to_string(),
+                    AttrValue::L(vec![AttrValue::Null, AttrValue::S("x".into())]),
+                ),
             ])),
         );
 
@@ -99,7 +102,10 @@ mod tests {
         let mut keys = Item::new();
         keys.insert("b".into(), AttrValue::B(vec![0, 1, 2, 255]));
         keys.insert("ns".into(), AttrValue::Ns(vec!["1".into(), "2.5".into()]));
-        let rec = StreamRecord { keys, ..Default::default() };
+        let rec = StreamRecord {
+            keys,
+            ..Default::default()
+        };
         assert_eq!(StreamRecord::decode(&rec.encode()).unwrap(), rec);
     }
 }

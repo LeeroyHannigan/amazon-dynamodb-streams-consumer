@@ -14,17 +14,19 @@
 //!   DDB_STREAMS_CONSUMER_IT=1 AWS_REGION=us-east-1 cargo test -p amazon-dynamodb-streams-consumer-worker \
 //!     --features aws --test live_fleet -- --nocapture
 
+use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
+use amazon_dynamodb_streams_consumer_core::{
+    Record, RecordProcessor, RecordProcessorFactory, ShardId,
+};
+use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
+use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
+use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig};
 use aws_sdk_dynamodb as ddb;
 use aws_sdk_dynamodbstreams as streams;
 use ddb::types::{
     AttributeDefinition, AttributeValue, BillingMode, KeySchemaElement, KeyType,
     ScalarAttributeType, StreamSpecification, StreamViewType, TableStatus,
 };
-use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
-use amazon_dynamodb_streams_consumer_core::{Record, RecordProcessor, RecordProcessorFactory, ShardId};
-use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
-use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
-use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -37,7 +39,10 @@ struct RecordingFactory {
 }
 impl RecordProcessorFactory for RecordingFactory {
     fn create(&self, _shard: &ShardId) -> Box<dyn RecordProcessor + Send> {
-        Box::new(RecordingProc { shard: String::new(), sink: self.sink.clone() })
+        Box::new(RecordingProc {
+            shard: String::new(),
+            sink: self.sink.clone(),
+        })
     }
 }
 struct RecordingProc {
@@ -51,7 +56,9 @@ impl RecordProcessor for RecordingProc {
     fn process_records(&mut self, rs: &[Record]) {
         let mut m = self.sink.lock().unwrap();
         for r in rs {
-            m.entry(self.shard.clone()).or_default().push((r.seq.clone(), r.data.len()));
+            m.entry(self.shard.clone())
+                .or_default()
+                .push((r.seq.clone(), r.data.len()));
         }
     }
     fn shard_ended(&mut self, _s: &ShardId) {}
@@ -107,7 +114,12 @@ async fn live_fleet_consumes_and_checkpoints() {
         .expect("create data table");
 
     let stream_arn = loop {
-        let d = db.describe_table().table_name(&data_table).send().await.unwrap();
+        let d = db
+            .describe_table()
+            .table_name(&data_table)
+            .send()
+            .await
+            .unwrap();
         let t = d.table().unwrap();
         if t.table_status() == Some(&TableStatus::Active) {
             break t.latest_stream_arn().unwrap().to_string();
@@ -162,10 +174,16 @@ async fn live_fleet_consumes_and_checkpoints() {
 
     // Payloads flowed through the fleet (NewImage present → non-empty data).
     let any_payload = m.values().flatten().any(|(_, len)| *len > 0);
-    assert!(any_payload, "expected at least one record to carry a non-empty payload");
+    assert!(
+        any_payload,
+        "expected at least one record to carry a non-empty payload"
+    );
 
     // A checkpoint must be persisted in the lease table.
-    assert!(checkpoint.is_some(), "expected a lease checkpoint to be persisted");
+    assert!(
+        checkpoint.is_some(),
+        "expected a lease checkpoint to be persisted"
+    );
 }
 
 async fn run_fleet(

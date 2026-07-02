@@ -8,8 +8,8 @@
 //!   DDB_STREAMS_CONSUMER_IT=1 cargo test -p amazon-dynamodb-streams-consumer-lease \
 //!     --features aws --test live_lease -- --nocapture
 
-use aws_sdk_dynamodb as ddb;
 use amazon_dynamodb_streams_consumer_lease::dynamodb::{DynamoDbLeaseStore, LeaseError};
+use aws_sdk_dynamodb as ddb;
 
 #[tokio::test]
 async fn live_optimistic_lock_lease_cycle() {
@@ -20,7 +20,10 @@ async fn live_optimistic_lock_lease_cycle() {
 
     let cfg = aws_config::load_defaults(aws_config::BehaviorVersion::latest()).await;
     let client = ddb::Client::new(&cfg);
-    let table = format!("amazon-dynamodb-streams-consumer-leases-it-{}", std::process::id());
+    let table = format!(
+        "amazon-dynamodb-streams-consumer-leases-it-{}",
+        std::process::id()
+    );
 
     let store = DynamoDbLeaseStore::new(client.clone(), &table);
     store.ensure_table().await.expect("ensure_table");
@@ -33,7 +36,9 @@ async fn live_optimistic_lock_lease_cycle() {
     outcome.expect("lease cycle");
 }
 
-async fn run_cycle(store: &DynamoDbLeaseStore) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+async fn run_cycle(
+    store: &DynamoDbLeaseStore,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Acquire (fresh → counter 1).
     let lease = store.acquire("shard-1", "w1").await.map_err(to_box)?;
     assert_eq!(lease.lease_counter, 1);
@@ -44,13 +49,18 @@ async fn run_cycle(store: &DynamoDbLeaseStore) -> Result<(), Box<dyn std::error:
     assert_eq!(c2, 2);
 
     // Checkpoint (counter 2 → 3, stores opaque seq).
-    let c3 = store.checkpoint("shard-1", "w1", 2, "seq-abc").await.map_err(to_box)?;
+    let c3 = store
+        .checkpoint("shard-1", "w1", 2, "seq-abc")
+        .await
+        .map_err(to_box)?;
     assert_eq!(c3, 3);
 
     // Optimistic lock: renewing at a STALE counter (2, but it's now 3) must lose.
     match store.renew("shard-1", "w1", 2).await {
         Err(LeaseError::Lost) => {}
-        other => return Err(format!("expected LeaseError::Lost on stale renew, got {other:?}").into()),
+        other => {
+            return Err(format!("expected LeaseError::Lost on stale renew, got {other:?}").into())
+        }
     }
 
     // Checkpoint persisted and readable.

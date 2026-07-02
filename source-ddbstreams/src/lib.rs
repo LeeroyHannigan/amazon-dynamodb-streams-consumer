@@ -43,7 +43,11 @@ impl DdbShard {
     }
 
     /// Closed shard (has an ending sequence number → reached SHARD_END).
-    pub fn closed(shard_id: impl Into<ShardId>, parent: Option<&str>, ending_seq: impl Into<String>) -> Self {
+    pub fn closed(
+        shard_id: impl Into<ShardId>,
+        parent: Option<&str>,
+        ending_seq: impl Into<String>,
+    ) -> Self {
         Self {
             shard_id: shard_id.into(),
             parent_shard_id: parent.map(|p| p.to_string()),
@@ -289,14 +293,17 @@ mod tests {
     fn close_open_parents_closes_a_parent_that_looks_open() {
         // "p" is reported open (no ending seq) but has a child "c" → must close.
         let shards = vec![
-            DdbShard::new("p", None),          // open, but is a parent
-            DdbShard::new("c", Some("p")),     // leaf, genuinely open
+            DdbShard::new("p", None),      // open, but is a parent
+            DdbShard::new("c", Some("p")), // leaf, genuinely open
         ];
         let out = close_open_parents(shards);
         let p = out.iter().find(|s| s.shard_id == "p").unwrap();
         let c = out.iter().find(|s| s.shard_id == "c").unwrap();
         assert!(!p.is_open(), "parent with children must be closed");
-        assert_eq!(p.ending_sequence_number.as_deref(), Some(CLOSED_BY_SHARD_SYNC));
+        assert_eq!(
+            p.ending_sequence_number.as_deref(),
+            Some(CLOSED_BY_SHARD_SYNC)
+        );
         assert!(c.is_open(), "childless leaf stays open");
     }
 

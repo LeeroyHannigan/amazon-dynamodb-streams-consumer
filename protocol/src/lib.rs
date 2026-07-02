@@ -113,7 +113,10 @@ mod tests {
         let msg = ServerMessage::Records {
             shard: "shardId-0001".into(),
             last_seq: "100000000000000000009".into(),
-            records: vec![sample_record("100000000000000000008"), sample_record("100000000000000000009")],
+            records: vec![
+                sample_record("100000000000000000008"),
+                sample_record("100000000000000000009"),
+            ],
         };
         let line = msg.to_line();
         assert!(line.ends_with('\n'));
@@ -125,7 +128,9 @@ mod tests {
     fn lifecycle_messages_round_trip() {
         for msg in [
             ServerMessage::ShardComplete { shard: "s1".into() },
-            ServerMessage::Shutdown { reason: "SIGTERM".into() },
+            ServerMessage::Shutdown {
+                reason: "SIGTERM".into(),
+            },
         ] {
             assert_eq!(ServerMessage::parse(&msg.to_line()).unwrap(), msg);
         }
@@ -135,7 +140,10 @@ mod tests {
     fn client_messages_round_trip() {
         for msg in [
             ClientMessage::Ready,
-            ClientMessage::Checkpoint { shard: "s1".into(), seq: "42".into() },
+            ClientMessage::Checkpoint {
+                shard: "s1".into(),
+                seq: "42".into(),
+            },
             ClientMessage::Stop,
         ] {
             assert_eq!(ClientMessage::parse(&msg.to_line()).unwrap(), msg);
@@ -147,7 +155,11 @@ mod tests {
         // The wire tag is part of the contract with non-Rust clients; pin it.
         let j = ServerMessage::ShardComplete { shard: "s1".into() }.to_json();
         assert!(j.contains(r#""type":"shard_complete""#), "got {j}");
-        let c = ClientMessage::Checkpoint { shard: "s1".into(), seq: "9".into() }.to_json();
+        let c = ClientMessage::Checkpoint {
+            shard: "s1".into(),
+            seq: "9".into(),
+        }
+        .to_json();
         assert!(c.contains(r#""type":"checkpoint""#), "got {c}");
     }
 
