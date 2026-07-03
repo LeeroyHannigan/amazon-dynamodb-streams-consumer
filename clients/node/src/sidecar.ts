@@ -1,25 +1,20 @@
-'use strict';
-
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const http = require('node:http');
-const https = require('node:https');
-const crypto = require('node:crypto');
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import * as http from 'node:http';
+import * as https from 'node:https';
+import * as crypto from 'node:crypto';
 
 const BINARY = 'amazon-dynamodb-streams-consumer-sidecar';
-const VERSION = '0.1.0';
+export const VERSION = '0.1.0';
 const DEFAULT_RELEASE_BASE =
   'https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/releases/download';
 
-function releaseBase() {
+function releaseBase(): string {
   return process.env.DDB_STREAMS_CONSUMER_RELEASE_BASE || DEFAULT_RELEASE_BASE;
 }
 
-// Maps Node's platform/arch to the stable release asset naming (os in
-// {linux,darwin,windows}, arch in {x86_64,aarch64}) -- the same language-neutral
-// contract release.yml publishes and the Go client consumes.
-function platformArch() {
+export function platformArch(): { osName: string; arch: string; ext: string } {
   const osName =
     process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'darwin' : 'linux';
   const arch = process.arch === 'x64' ? 'x86_64' : process.arch === 'arm64' ? 'aarch64' : process.arch;
@@ -27,21 +22,22 @@ function platformArch() {
   return { osName, arch, ext };
 }
 
-function cachePath() {
+export function cachePath(): string {
   const base = process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache');
   const { ext } = platformArch();
   return path.join(base, 'amazon-dynamodb-streams-consumer', VERSION, BINARY + ext);
 }
 
-// GET with redirect following (GitHub release assets 302 to a CDN).
-function httpGet(url, redirects = 0) {
+// GET with redirect following (GitHub release assets 302 to a CDN). Accepts
+// http or https so it can be exercised against a local test server.
+function httpGet(url: string, redirects = 0): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     if (redirects > 5) return reject(new Error('too many redirects'));
     const mod = url.startsWith('http://') ? http : https;
     mod
       .get(url, (res) => {
         const { statusCode, headers } = res;
-        if (statusCode >= 300 && statusCode < 400 && headers.location) {
+        if (statusCode && statusCode >= 300 && statusCode < 400 && headers.location) {
           res.resume();
           resolve(httpGet(headers.location, redirects + 1));
           return;
@@ -51,8 +47,8 @@ function httpGet(url, redirects = 0) {
           reject(new Error(`GET ${url}: HTTP ${statusCode}`));
           return;
         }
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => resolve(Buffer.concat(chunks)));
         res.on('error', reject);
       })
@@ -60,7 +56,7 @@ function httpGet(url, redirects = 0) {
   });
 }
 
-async function download(dst) {
+async function download(dst: string): Promise<string> {
   const { osName, arch, ext } = platformArch();
   const asset = `${BINARY}-${osName}-${arch}${ext}`;
   const binURL = `${releaseBase().replace(/\/$/, '')}/v${VERSION}/${asset}`;
@@ -77,7 +73,7 @@ async function download(dst) {
   return dst;
 }
 
-function onPath() {
+function onPath(): string | null {
   const { ext } = platformArch();
   const name = BINARY + ext;
   for (const dir of (process.env.PATH || '').split(path.delimiter)) {
@@ -93,10 +89,10 @@ function onPath() {
   return null;
 }
 
-// Resolution order: explicit path -> env override -> cached download -> download
-// -> PATH. Unlike npm, we don't ship a per-platform binary in the tarball; the
-// sidecar is fetched once and cached, so it is still install-and-go.
-async function discoverSidecar(explicit) {
+// Resolution order: explicit path -> env override -> cached download ->
+// download -> PATH. npm ships JS not a binary, so the sidecar is fetched once
+// and cached; it is still install-and-go.
+export async function discoverSidecar(explicit?: string): Promise<string> {
   if (explicit) return explicit;
   if (process.env.DDB_STREAMS_CONSUMER_SIDECAR) return process.env.DDB_STREAMS_CONSUMER_SIDECAR;
   const cached = cachePath();
@@ -111,11 +107,10 @@ async function discoverSidecar(explicit) {
   } catch (e) {
     const p = onPath();
     if (p) return p;
+    const msg = e instanceof Error ? e.message : String(e);
     throw new Error(
-      `could not obtain the ${BINARY} sidecar: download failed (${e.message}) and it is not on PATH. ` +
+      `could not obtain the ${BINARY} sidecar: download failed (${msg}) and it is not on PATH. ` +
         'Set DDB_STREAMS_CONSUMER_SIDECAR=/path/to/sidecar or install it manually'
     );
   }
 }
-
-module.exports = { discoverSidecar, cachePath, platformArch, VERSION };

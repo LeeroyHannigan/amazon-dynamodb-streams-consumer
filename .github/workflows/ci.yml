@@ -46,6 +46,11 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Type check (mypy --strict)
+        working-directory: clients/python
+        run: |
+          python -m pip install --quiet mypy
+          python -m mypy --strict src/dynamodb_streams_consumer
       - name: Unit tests
         working-directory: clients/python
         run: python -m unittest discover -s tests
@@ -84,9 +89,12 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Test (unit + conformance)
+      - name: Install
         working-directory: clients/node
-        run: node --test
+        run: npm install --no-fund --no-audit
+      - name: Build + test (tsc, unit + conformance)
+        working-directory: clients/node
+        run: npm test
 
   coverage:
     name: Coverage

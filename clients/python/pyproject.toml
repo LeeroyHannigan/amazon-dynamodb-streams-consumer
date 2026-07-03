@@ -19,4 +19,4 @@ where = ["src"]
 # The sidecar binary is dropped into src/dynamodb_streams_consumer/_bin/ by the
 # build script before packaging, and shipped inside the (platform-specific) wheel.
 [tool.setuptools.package-data]
-dynamodb_streams_consumer = ["_bin/*"]
+dynamodb_streams_consumer = ["_bin/*", "py.typed"]

@@ -169,7 +169,7 @@ cd clients/python && python3 -m unittest discover -s tests
 cd clients/go && go test ./...
 
 # Node client tests (unit + shared conformance; needs python3 for the replay sidecar)
-cd clients/node && node --test
+cd clients/node && npm install && npm test
 
 # Build a Python wheel with the sidecar bundled (installs a working consumer)
 bash clients/python/build_wheel.sh

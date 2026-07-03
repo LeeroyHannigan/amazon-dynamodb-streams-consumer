@@ -60,12 +60,24 @@ worker.run().then((code) => console.log('exited', code)); // resolves on shutdow
 `Null` → `null`, `B` → `Buffer`, `M` → object, `L` → array, `Ss`/`Ns` →
 `string[]`, `Bs` → `Buffer[]`.
 
+## TypeScript
+
+The client is written in TypeScript; the published package ships compiled
+JavaScript plus generated type declarations (`dist/index.d.ts`), so both JS and
+TS consumers get full types with no `@types` package.
+
+```ts
+import { Worker, Record } from 'amazon-dynamodb-streams-consumer';
+```
+
 ## Testing
 
 ```bash
-cd clients/node && node --test
+cd clients/node
+npm install
+npm test   # tsc build + node --test (unit + shared conformance)
 ```
 
-Runs native-decoding unit tests plus the shared binding **conformance** suite
-(`../../conformance/fixtures/*.json`) against the language-agnostic
-`replay_sidecar.py` — no AWS, no real sidecar (needs `python3` on PATH).
+The conformance suite runs the shared `../../conformance/fixtures/*.json`
+against the language-agnostic `replay_sidecar.py` — no AWS, no real sidecar
+(needs `python3` on PATH).

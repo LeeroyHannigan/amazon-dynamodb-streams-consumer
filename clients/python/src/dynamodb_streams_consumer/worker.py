@@ -30,7 +30,7 @@ import os
 import shutil
 import subprocess
 import threading
-from typing import List, Optional, Protocol, Sequence
+from typing import Any, List, Optional, Protocol, Sequence
 
 from .record import Record
 
@@ -96,10 +96,10 @@ class Worker:
         # sidecar_cmd overrides everything (tests / custom launch); otherwise the
         # resolved single binary.
         self._cmd = list(sidecar_cmd) if sidecar_cmd else [sidecar_path or _discover_sidecar()]
-        self._proc: Optional[subprocess.Popen] = None
+        self._proc: Optional[subprocess.Popen[str]] = None
         self._stdin_lock = threading.Lock()
 
-    def _env(self) -> dict:
+    def _env(self) -> dict[str, str]:
         env = dict(os.environ)
         env["DDB_STREAMS_CONSUMER_STREAM_ARN"] = self.stream_arn
         env["DDB_STREAMS_CONSUMER_LEASE_TABLE"] = self.lease_table
@@ -117,7 +117,7 @@ class Worker:
                 env[key] = str(val)
         return env
 
-    def _send(self, msg: dict) -> None:
+    def _send(self, msg: dict[str, Any]) -> None:
         assert self._proc and self._proc.stdin
         with self._stdin_lock:
             if self._proc.stdin.closed:
@@ -170,7 +170,7 @@ class Worker:
             self._stop()
         return proc.wait()
 
-    def _handle(self, msg: dict) -> None:
+    def _handle(self, msg: dict[str, Any]) -> None:
         kind = msg.get("type")
         if kind == "records":
             shard = msg["shard"]

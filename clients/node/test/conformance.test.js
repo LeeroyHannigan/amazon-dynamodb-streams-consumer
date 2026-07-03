@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { Worker } = require('../src/index');
+const { Worker } = require('../dist/index');
 
 const CONF = path.join(__dirname, '..', '..', '..', 'conformance');
 const REPLAY = path.join(CONF, 'replay_sidecar.py');

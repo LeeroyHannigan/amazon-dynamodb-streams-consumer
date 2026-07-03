@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const { discoverSidecar, platformArch, VERSION } = require('../src/sidecar');
+const { discoverSidecar, platformArch, VERSION } = require('../dist/sidecar');
 
 function listen(server) {
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));

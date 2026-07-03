@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { decodeAttr, recordFromWire } = require('../src/record');
+const { decodeAttr, recordFromWire } = require('../dist/record');
 
 test('scalars', () => {
   assert.strictEqual(decodeAttr({ S: 'hi' }), 'hi');
