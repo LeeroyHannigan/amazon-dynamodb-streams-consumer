@@ -18,11 +18,18 @@ case "${OSTYPE:-}" in
   msys* | cygwin* | win*) ext=".exe" ;;
 esac
 
+# Static musl targets are built with cargo-zigbuild (no glibc dependency, so the
+# bundled sidecar runs on any Linux); other targets use plain cargo.
+cargo_cmd="build"
+case "$target" in
+  *-musl) cargo_cmd="zigbuild" ;;
+esac
+
 if [ -n "$target" ]; then
-  (cd "$root" && cargo build --release -p "$bin_name" --features otel --target "$target")
+  (cd "$root" && cargo "$cargo_cmd" --release -p "$bin_name" --features otel --target "$target")
   built="$root/target/$target/release/${bin_name}${ext}"
 else
-  (cd "$root" && cargo build --release -p "$bin_name" --features otel)
+  (cd "$root" && cargo "$cargo_cmd" --release -p "$bin_name" --features otel)
   built="$root/target/release/${bin_name}${ext}"
 fi
 

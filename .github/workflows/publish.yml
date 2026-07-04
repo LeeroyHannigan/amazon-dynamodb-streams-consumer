@@ -17,27 +17,32 @@ permissions:
 
 jobs:
   linux-wheel:
-    name: Wheel (manylinux x86_64)
+    name: Wheel (linux x86_64 — manylinux_2_17 + musllinux_1_2)
     runs-on: ubuntu-latest
-    # Build inside the manylinux image so the sidecar links an old-enough glibc
-    # and the wheel can legitimately carry a manylinux tag (PyPI-acceptable).
-    container: quay.io/pypa/manylinux_2_28_x86_64
+    # Static-musl sidecar (via cargo-zigbuild) has NO glibc dependency, so one
+    # binary serves both a broad manylinux_2_17 wheel (glibc >= 2.17: Amazon
+    # Linux 2, CentOS 7, and newer) and a musllinux_1_2 wheel (Alpine). No
+    # manylinux build container needed.
     steps:
       - uses: actions/checkout@v5
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Build bundled wheel + relabel manylinux
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Build static-musl bundled wheels (manylinux_2_17 + musllinux_1_2)
         run: |
           set -euo pipefail
-          PYBIN=/opt/python/cp311-cp311/bin
-          "$PYBIN/pip" install --upgrade build wheel
-          PATH="$HOME/.cargo/bin:$PYBIN:$PATH" bash clients/python/build_wheel.sh
-          # build_wheel.sh tags the wheel linux_x86_64; relabel to manylinux
-          # (valid because it was built against manylinux_2_28's glibc).
-          "$PYBIN/python" -m wheel tags --platform-tag manylinux_2_28_x86_64 --remove clients/python/dist/*.whl
-          ls -1 clients/python/dist/
+          # cargo-zigbuild + zig come from PyPI (ziglang); no extra system deps.
+          python -m pip install --upgrade build wheel cargo-zigbuild ziglang
+          bash clients/python/build_wheel.sh x86_64-unknown-linux-musl
+          cd clients/python/dist
+          base=$(ls *.whl)
+          python -m wheel tags --platform-tag manylinux_2_17_x86_64 "$base"
+          python -m wheel tags --platform-tag musllinux_1_2_x86_64 "$base"
+          rm -f "$base"
+          ls -1
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-linux-x86_64
@@ -78,23 +83,27 @@ jobs:
           path: staged/*.whl
 
   linux-wheel-aarch64:
-    name: Wheel (manylinux aarch64)
+    name: Wheel (linux aarch64 — manylinux_2_17 + musllinux_1_2)
     runs-on: ubuntu-24.04-arm # native ARM runner (free on public repos)
-    container: quay.io/pypa/manylinux_2_28_aarch64
     steps:
       - uses: actions/checkout@v5
-      - name: Install Rust
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - name: Build bundled wheel + relabel manylinux
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Build static-musl bundled wheels (manylinux_2_17 + musllinux_1_2)
         run: |
           set -euo pipefail
-          PYBIN=/opt/python/cp311-cp311/bin
-          "$PYBIN/pip" install --upgrade build wheel
-          PATH="$HOME/.cargo/bin:$PYBIN:$PATH" bash clients/python/build_wheel.sh
-          "$PYBIN/python" -m wheel tags --platform-tag manylinux_2_28_aarch64 --remove clients/python/dist/*.whl
-          ls -1 clients/python/dist/
+          python -m pip install --upgrade build wheel cargo-zigbuild ziglang
+          bash clients/python/build_wheel.sh aarch64-unknown-linux-musl
+          cd clients/python/dist
+          base=$(ls *.whl)
+          python -m wheel tags --platform-tag manylinux_2_17_aarch64 "$base"
+          python -m wheel tags --platform-tag musllinux_1_2_aarch64 "$base"
+          rm -f "$base"
+          ls -1
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-linux-aarch64

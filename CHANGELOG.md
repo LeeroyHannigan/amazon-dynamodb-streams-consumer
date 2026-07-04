@@ -10,6 +10,15 @@ single `vX.Y.Z` git tag releases the whole project.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-04
+
+### Fixed
+- Python Linux wheels now ship as `manylinux_2_17` **and** `musllinux_1_2`
+  (x86_64 + aarch64), bundling the static-musl sidecar. This lowers the glibc
+  floor from 2.28 to 2.17 (installable on Amazon Linux 2, CentOS 7, and newer)
+  and adds Alpine/musl support — matching the glibc-independence the Go/Node
+  auto-downloaded sidecar gained in 0.1.1.
+
 ## [0.1.1] - 2026-07-04
 
 ### Fixed
@@ -35,6 +44,7 @@ Initial alpha release.
 - Sidecar binary and a newline-delimited JSON protocol for language clients.
 - Python client (`dynamodb_streams_consumer`) with a zero-dependency stdio bridge.
 
-[Unreleased]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/releases/tag/v0.1.0
