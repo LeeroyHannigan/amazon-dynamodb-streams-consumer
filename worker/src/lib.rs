@@ -46,6 +46,24 @@ pub trait AsyncStreamSource {
         shard: &str,
         after: Option<String>,
     ) -> Result<RecordBatch, WorkerError>;
+
+    /// Return the child shards of `parent` (each with its parents populated).
+    ///
+    /// Default: filter a full `describe_shards()` — correct but not API-efficient.
+    /// The live DynamoDB Streams source OVERRIDES this with a targeted
+    /// `DescribeStream` + `CHILD_SHARDS` `ShardFilter`, so the shard-sync leader
+    /// pays for shard discovery only when a shard actually ends — a stable
+    /// topology costs ZERO `DescribeStream` calls. Grounded in KCA
+    /// `DynamoDBStreamsShutdownTask.fetchChildShardsForCompleteLineage`, which
+    /// calls `listShardsWithFilter(CHILD_SHARDS, parentShardId)` (Apache-2.0).
+    async fn describe_child_shards(&self, parent: &str) -> Result<Vec<ShardMeta>, WorkerError> {
+        Ok(self
+            .describe_shards()
+            .await?
+            .into_iter()
+            .filter(|m| m.parents.iter().any(|p| p == parent))
+            .collect())
+    }
 }
 
 /// Async lease store (DynamoDB optimistic-lock leases).
@@ -73,6 +91,35 @@ pub trait AsyncLeaseStore {
     /// Release a held lease (clear owner, bump counter) so another worker can
     /// take it immediately on graceful shutdown. Conditional on ownership.
     async fn release(&self, lease_key: &str, owner: &str, counter: u64) -> Result<(), WorkerError>;
+
+    /// Publish a shard as an **unowned** lease carrying its `parents`, if it does
+    /// not already exist (idempotent create-if-absent — an existing/in-progress
+    /// lease is left untouched). Called ONLY by the shard-sync leader: it is how
+    /// the leader shares a discovered shard (and its lineage) with the fleet so
+    /// non-leaders never call DescribeStream. See [`crate::fleet`] / core `leader`.
+    async fn create_shard_lease(
+        &self,
+        lease_key: &str,
+        parents: &[ShardId],
+    ) -> Result<(), WorkerError>;
+
+    /// Optimistic bid for the leader lease.
+    ///   * `expected == None`  → create-if-absent: become leader only if the
+    ///     sentinel is vacant (loses the race harmlessly if another worker
+    ///     created it first).
+    ///   * `expected == Some(c)` → steal an EXPIRED leader lease, conditioned on
+    ///     the counter `c` we last observed (if the old leader revived and
+    ///     heartbeated, `c` advanced, the condition fails, and the steal loses).
+    ///
+    /// Returns `Some(new_counter)` if this worker now holds leadership, or `None`
+    /// if the bid lost the optimistic-lock race. Renewal of a held leader lease
+    /// uses [`AsyncLeaseStore::renew`].
+    async fn try_acquire_leadership(
+        &self,
+        lease_key: &str,
+        owner: &str,
+        expected: Option<u64>,
+    ) -> Result<Option<u64>, WorkerError>;
 }
 
 /// Async, ack-gated per-shard delivery used by the [`fleet::Fleet`]. Unlike the
@@ -298,6 +345,7 @@ mod tests {
         counter: u64,
         checkpoint: Option<String>,
         completed: bool,
+        parents: Vec<String>,
     }
     #[derive(Default)]
     struct FakeLeases {
@@ -322,6 +370,7 @@ mod tests {
                     lease_counter: r.counter,
                     completed: r.completed,
                     checkpoint: r.checkpoint.clone(),
+                    parents: r.parents.clone(),
                 })
                 .collect())
         }
@@ -375,6 +424,54 @@ mod tests {
             r.owner = None;
             r.counter = counter + 1;
             Ok(())
+        }
+        async fn create_shard_lease(
+            &self,
+            key: &str,
+            parents: &[ShardId],
+        ) -> Result<(), WorkerError> {
+            let mut rows = self.rows.lock().unwrap();
+            rows.entry(key.to_string())
+                .or_insert_with(|| FakeLeaseState {
+                    owner: None,
+                    counter: 0,
+                    checkpoint: None,
+                    completed: false,
+                    parents: parents.to_vec(),
+                });
+            Ok(())
+        }
+        async fn try_acquire_leadership(
+            &self,
+            key: &str,
+            owner: &str,
+            expected: Option<u64>,
+        ) -> Result<Option<u64>, WorkerError> {
+            let mut rows = self.rows.lock().unwrap();
+            match expected {
+                None => {
+                    if rows.contains_key(key) {
+                        return Ok(None); // already created → we didn't win
+                    }
+                    rows.insert(
+                        key.to_string(),
+                        FakeLeaseState {
+                            owner: Some(owner.to_string()),
+                            counter: 1,
+                            ..Default::default()
+                        },
+                    );
+                    Ok(Some(1))
+                }
+                Some(c) => match rows.get_mut(key) {
+                    Some(r) if r.counter == c => {
+                        r.owner = Some(owner.to_string());
+                        r.counter = c + 1;
+                        Ok(Some(c + 1))
+                    }
+                    _ => Ok(None), // counter advanced → steal lost
+                },
+            }
         }
     }
 
@@ -462,6 +559,7 @@ mod tests {
                 counter: 3,
                 checkpoint: Some("11".into()),
                 completed: false,
+                parents: vec![],
             },
         );
         let worker = Worker::new(source, leases, "w1");

@@ -15,6 +15,7 @@
 pub mod backoff;
 pub mod cleanup;
 pub mod coordinator;
+pub mod leader;
 pub mod multistream;
 pub mod record;
 pub mod taker;

@@ -35,6 +35,10 @@ pub struct Lease {
     /// Shard fully processed (SHARD_END). Kept as a tombstone until children are
     /// processing, to prevent lineage replay (KCL `LeaseCleanupManager`).
     pub completed: bool,
+    /// Parent shard ids for this shard, published by the shard-sync leader so
+    /// non-leader workers can rebuild the shard graph without DescribeStream.
+    /// Empty for the leader sentinel and for root shards.
+    pub parents: Vec<String>,
 }
 
 impl Lease {

@@ -95,6 +95,61 @@ impl DdbStreamsSource {
         Ok(build_shard_graph(vec![normalized]))
     }
 
+    /// Efficient incremental discovery: fetch ONLY the children of `parent` via
+    /// `DescribeStream` with a `CHILD_SHARDS` `ShardFilter` (paginated), instead
+    /// of re-scanning the whole stream. This is what lets the shard-sync leader
+    /// stay quiet on a stable topology and query only when a shard ends.
+    ///
+    /// The returned children keep their `ParentShardId` link verbatim (we do NOT
+    /// run `build_shard_graph`/`close_open_parents` here, since those would drop
+    /// `parent` — which is intentionally absent from this filtered response — and
+    /// wrongly root the children). `parent` is known-present in the lease table.
+    ///
+    /// Grounded in KCA `DynamoDBStreamsShardDetector.listShardsWithFilter`
+    /// (`ShardFilterType.CHILD_SHARDS`, awslabs/dynamodb-streams-kinesis-adapter,
+    /// Apache-2.0). On a filtered-call error the caller falls back to a full
+    /// `describe_shards`, matching the adapter.
+    pub async fn describe_child_shards(&self, parent: &str) -> Result<Vec<ShardMeta>, BoxError> {
+        let filter = aws_sdk_dynamodbstreams::types::ShardFilter::builder()
+            .r#type(aws_sdk_dynamodbstreams::types::ShardFilterType::ChildShards)
+            .shard_id(parent)
+            .build();
+        let mut out: Vec<ShardMeta> = Vec::new();
+        let mut start: Option<String> = None;
+        loop {
+            let resp = self
+                .client
+                .describe_stream()
+                .stream_arn(&self.stream_arn)
+                .shard_filter(filter.clone())
+                .set_exclusive_start_shard_id(start.clone())
+                .send()
+                .await?;
+            let Some(desc) = resp.stream_description() else {
+                break;
+            };
+            for s in desc.shards() {
+                let shard_id = s.shard_id().unwrap_or_default().to_string();
+                if shard_id.is_empty() {
+                    continue;
+                }
+                out.push(ShardMeta {
+                    id: shard_id,
+                    parents: s
+                        .parent_shard_id()
+                        .map(|p| p.to_string())
+                        .into_iter()
+                        .collect(),
+                });
+            }
+            match desc.last_evaluated_shard_id() {
+                Some(id) => start = Some(id.to_string()),
+                None => break,
+            }
+        }
+        Ok(out)
+    }
+
     /// Derive a *fresh* iterator from the stream via `GetShardIterator`
     /// (`AFTER_SEQUENCE_NUMBER` when resuming from a checkpoint, else
     /// `TRIM_HORIZON`). Used on first read, reposition, or after an

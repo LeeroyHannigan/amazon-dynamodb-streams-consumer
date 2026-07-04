@@ -14,7 +14,8 @@ use crate::{
     eligible, AsyncLeaseStore, AsyncShardConsumer, AsyncStreamSource, ShardConsumerFactory,
     WorkerError,
 };
-use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
+use amazon_dynamodb_streams_consumer_core::coordinator::{LeaseCoordinator, RawLease};
+use amazon_dynamodb_streams_consumer_core::leader::{shard_metas_from_leases, LEADER_LEASE_KEY};
 use amazon_dynamodb_streams_consumer_core::ShardId;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -29,11 +30,116 @@ pub struct FleetConfig {
     pub poll_interval_ms: u64,
 }
 
+/// This worker's bid for shard-sync **leadership**, carried across coordination
+/// cycles. Exactly one live worker in the fleet is the leader; only the leader
+/// calls `DescribeStream` and publishes discovered shards to the lease table
+/// (see [`Fleet::run_cycle`] and core `leader`). Leadership reuses the same
+/// optimistic-lock + expiry machinery as shard leases: a reserved sentinel lease
+/// ([`LEADER_LEASE_KEY`]) tracked by an internal single-slot [`LeaseCoordinator`]
+/// for expiry detection.
+pub struct Leadership {
+    owner: String,
+    /// Single-slot coordinator over the sentinel lease — reused purely for its
+    /// tested counter-freshness/expiry logic.
+    coord: LeaseCoordinator,
+    /// Counter we hold while leader (for renewals).
+    counter: u64,
+}
+
+impl Leadership {
+    pub fn new(owner: impl Into<String>, lease_duration_ms: u64) -> Self {
+        let owner = owner.into();
+        Self {
+            coord: LeaseCoordinator::new(owner.clone(), 1, lease_duration_ms),
+            owner,
+            counter: 0,
+        }
+    }
+
+    /// Decide + attempt to hold leadership for this cycle, given a fresh scan of
+    /// the lease table. Returns `true` iff this worker is the leader now (and is
+    /// therefore the only one that should call `DescribeStream`).
+    ///
+    /// Race-safety: a vacant sentinel is claimed create-if-absent (one winner);
+    /// an *expired* leader is stolen conditioned on the counter we observed (a
+    /// revived leader that heartbeated advances the counter and defeats the
+    /// steal); a *live* leader owned by someone else is left alone.
+    async fn step<L: AsyncLeaseStore + ?Sized>(
+        &mut self,
+        leases: &L,
+        rows: &[RawLease],
+        now_ms: u64,
+    ) -> bool {
+        let leader_row = rows.iter().find(|r| r.lease_key == LEADER_LEASE_KEY);
+        // Feed only the sentinel to the coordinator to maintain freshness and
+        // obtain the expiry decision (empty slice if it does not exist yet).
+        let sentinel: Vec<RawLease> = leader_row.cloned().into_iter().collect();
+        let expired_takeable = self
+            .coord
+            .tick(&sentinel, now_ms)
+            .iter()
+            .any(|k| k == LEADER_LEASE_KEY);
+
+        let i_own = leader_row.and_then(|r| r.owner.as_deref()) == Some(self.owner.as_str());
+        if i_own {
+            let base = leader_row.map(|r| r.lease_counter).unwrap_or(self.counter);
+            match leases.renew(LEADER_LEASE_KEY, &self.owner, base).await {
+                Ok(c) => {
+                    self.counter = c;
+                    true
+                }
+                Err(_) => false, // lost leadership; another worker will take over
+            }
+        } else if leader_row.is_none() {
+            // Vacant → create-if-absent.
+            match leases
+                .try_acquire_leadership(LEADER_LEASE_KEY, &self.owner, None)
+                .await
+            {
+                Ok(Some(c)) => {
+                    self.counter = c;
+                    true
+                }
+                _ => false,
+            }
+        } else if expired_takeable {
+            // Expired → steal, conditioned on the counter we last observed.
+            let seen = leader_row.map(|r| r.lease_counter).unwrap_or(0);
+            match leases
+                .try_acquire_leadership(LEADER_LEASE_KEY, &self.owner, Some(seen))
+                .await
+            {
+                Ok(Some(c)) => {
+                    self.counter = c;
+                    true
+                }
+                _ => false,
+            }
+        } else {
+            false // a live leader owned by another worker
+        }
+    }
+}
+
 pub struct Fleet<S, L> {
     source: Arc<S>,
     leases: Arc<L>,
     factory: Arc<dyn ShardConsumerFactory>,
     config: FleetConfig,
+    /// Leader-only incremental-sync bookkeeping (see [`Fleet::run_cycle`]).
+    sync_state: std::sync::Mutex<SyncState>,
+}
+
+/// Shard-sync progress tracked by the leader so it can avoid full `DescribeStream`
+/// re-scans: after a one-time seed, it discovers a completed parent's children via
+/// the `CHILD_SHARDS` filter exactly once.
+#[derive(Default)]
+struct SyncState {
+    /// Whether the one-time full `DescribeStream` seed (root shards) has run.
+    seeded: bool,
+    /// Completed parents whose children we've already fetched via `CHILD_SHARDS`
+    /// (guards childless stream-tail shards from being re-queried every cycle).
+    child_synced: HashSet<ShardId>,
 }
 
 impl<S, L> Fleet<S, L>
@@ -52,6 +158,7 @@ where
             leases: Arc::new(leases),
             factory,
             config,
+            sync_state: std::sync::Mutex::new(SyncState::default()),
         }
     }
 
@@ -64,10 +171,15 @@ where
             self.config.max_leases,
             self.config.lease_duration_ms,
         );
+        let mut leadership =
+            Leadership::new(self.config.owner.clone(), self.config.lease_duration_ms);
         let start = Instant::now();
         for _ in 0..max_cycles {
             let now_ms = start.elapsed().as_millis() as u64;
-            if self.run_cycle(&mut coordinator, now_ms).await? {
+            if self
+                .run_cycle(&mut coordinator, &mut leadership, now_ms)
+                .await?
+            {
                 return Ok(());
             }
         }
@@ -75,54 +187,68 @@ where
     }
 
     /// One coordination cycle. Returns `true` when all shards are complete.
+    ///
+    /// Shard discovery is **leader-gated**: only the elected leader calls
+    /// `DescribeStream` and publishes newly-eligible shards as lease rows (each
+    /// carrying its parents). Every worker — leader and follower alike — then
+    /// reconstructs the shard graph from the lease table it already scans, so a
+    /// follower issues *zero* `DescribeStream` calls. This is the KCL 3 model
+    /// (one central syncer) rather than the KCLv1 model (every worker syncs),
+    /// collapsing `DescribeStream` volume from (workers × cycles) to (1 × cycles).
     pub async fn run_cycle(
         &self,
         coordinator: &mut LeaseCoordinator,
+        leadership: &mut Leadership,
         now_ms: u64,
     ) -> Result<bool, WorkerError> {
-        // 1) Decide + claim this worker's share.
+        // 0) Leadership + leader-only shard sync.
         let rows = self.leases.list().await?;
-        for key in coordinator.tick(&rows, now_ms) {
+        if leadership.step(&*self.leases, &rows, now_ms).await {
+            self.leader_shard_sync(&rows).await?;
+        }
+
+        // 1) Decide + claim this worker's share (sentinel lease excluded from
+        //    shard coordination).
+        let shard_rows: Vec<RawLease> = self
+            .leases
+            .list()
+            .await?
+            .into_iter()
+            .filter(|r| r.lease_key != LEADER_LEASE_KEY)
+            .collect();
+        for key in coordinator.tick(&shard_rows, now_ms) {
             let _ = self.leases.acquire(&key, &self.config.owner).await; // best-effort
         }
 
-        // 2) Re-read ownership + completion.
-        let rows = self.leases.list().await?;
+        // 2) Re-read ownership + completion; rebuild the shard graph from leases
+        //    (NOT DescribeStream — the leader already published it).
+        let shard_rows: Vec<RawLease> = self
+            .leases
+            .list()
+            .await?
+            .into_iter()
+            .filter(|r| r.lease_key != LEADER_LEASE_KEY)
+            .collect();
         let owner = self.config.owner.as_str();
-        let has_lease: HashSet<ShardId> = rows.iter().map(|r| r.lease_key.clone()).collect();
         // shard -> (lease counter, resume checkpoint). The checkpoint lets a
         // task resume where the last owner left off instead of re-reading from
         // TRIM_HORIZON — essential for correctness across cycles and, critically,
         // across a process restart (the in-memory iterator is gone, but the
         // persisted checkpoint survives).
-        let mut owned: std::collections::HashMap<ShardId, (u64, Option<String>)> = rows
+        let owned: std::collections::HashMap<ShardId, (u64, Option<String>)> = shard_rows
             .iter()
             .filter(|r| r.owner.as_deref() == Some(owner) && !r.completed)
             .map(|r| (r.lease_key.clone(), (r.lease_counter, r.checkpoint.clone())))
             .collect();
-        let completed: HashSet<ShardId> = rows
+        let completed: HashSet<ShardId> = shard_rows
             .iter()
             .filter(|r| r.completed)
             .map(|r| r.lease_key.clone())
             .collect();
 
-        let shards = self.source.describe_shards().await?;
+        let shards = shard_metas_from_leases(&shard_rows);
         if !shards.is_empty() && shards.iter().all(|m| completed.contains(&m.id)) {
             return Ok(true);
-        }
-
-        // Shard-sync: create (acquire) leases for newly discovered eligible
-        // shards (parents complete) that have no lease yet — the analog of KCL's
-        // HierarchicalShardSyncer creating child leases only after SHARD_END.
-        for meta in &shards {
-            if completed.contains(&meta.id) || !eligible(meta, &completed) {
-                continue;
-            }
-            if !has_lease.contains(&meta.id) && !owned.contains_key(&meta.id) {
-                if let Ok(h) = self.leases.acquire(&meta.id, owner).await {
-                    owned.insert(meta.id.clone(), (h.counter, h.checkpoint));
-                }
-            }
         }
 
         // 3) Run one concurrent task per owned + eligible shard.
@@ -150,6 +276,88 @@ where
         }
         while set.join_next().await.is_some() {}
         Ok(false)
+    }
+
+    /// Leader-only shard discovery. Publishes newly-eligible shards as leases
+    /// (each carrying its parents), gating a child until its parents complete
+    /// (KCL `HierarchicalShardSyncer` semantics).
+    ///
+    /// Efficiency: a **one-time** full `DescribeStream` seeds the root shards;
+    /// thereafter children are discovered per shard-end via the `CHILD_SHARDS`
+    /// `ShardFilter` ([`AsyncStreamSource::describe_child_shards`]) — so a stable
+    /// topology issues ZERO `DescribeStream` calls. A completed parent that
+    /// already has published children is skipped (cheap leader-failover), and a
+    /// childless (stream-tail) parent is queried at most once per leader via
+    /// `child_synced`. On a filtered-call error we fall back to a full describe,
+    /// matching the adapter.
+    async fn leader_shard_sync(&self, rows: &[RawLease]) -> Result<(), WorkerError> {
+        let completed: HashSet<ShardId> = rows
+            .iter()
+            .filter(|r| r.completed)
+            .map(|r| r.lease_key.clone())
+            .collect();
+        let existing: HashSet<ShardId> = rows.iter().map(|r| r.lease_key.clone()).collect();
+        // Parents that already have >=1 published child lease — no need to
+        // re-discover their children (survives leader failover without schema).
+        let parents_with_children: HashSet<ShardId> = rows
+            .iter()
+            .flat_map(|r| r.parents.iter().cloned())
+            .collect();
+
+        let (seeded, already_synced) = {
+            let s = self.sync_state.lock().unwrap();
+            (s.seeded, s.child_synced.clone())
+        };
+
+        if !seeded {
+            // One-time seed: full DescribeStream → create the root shards (those
+            // whose parents are all complete; at bootstrap that's the roots).
+            for m in self.source.describe_shards().await? {
+                if m.parents.iter().all(|p| completed.contains(p)) && !existing.contains(&m.id) {
+                    let _ = self.leases.create_shard_lease(&m.id, &m.parents).await;
+                }
+            }
+            self.sync_state.lock().unwrap().seeded = true;
+            return Ok(());
+        }
+
+        // Incremental: for each newly-completed parent, fetch ONLY its children.
+        let mut newly_synced: Vec<ShardId> = Vec::new();
+        for parent in &completed {
+            if already_synced.contains(parent) || parents_with_children.contains(parent) {
+                continue;
+            }
+            match self.source.describe_child_shards(parent).await {
+                Ok(children) => {
+                    for c in children {
+                        if !existing.contains(&c.id) {
+                            let _ = self.leases.create_shard_lease(&c.id, &c.parents).await;
+                        }
+                    }
+                    newly_synced.push(parent.clone());
+                }
+                Err(_) => {
+                    // Filtered call failed → fall back to a full describe this
+                    // cycle (adapter behavior). Do NOT mark synced, so we retry.
+                    if let Ok(metas) = self.source.describe_shards().await {
+                        for m in metas {
+                            if m.parents.iter().all(|p| completed.contains(p))
+                                && !existing.contains(&m.id)
+                            {
+                                let _ = self.leases.create_shard_lease(&m.id, &m.parents).await;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !newly_synced.is_empty() {
+            let mut s = self.sync_state.lock().unwrap();
+            for p in newly_synced {
+                s.child_synced.insert(p);
+            }
+        }
+        Ok(())
     }
 
     /// Release every lease this worker currently owns (graceful shutdown), so
@@ -307,6 +515,7 @@ mod tests {
         counter: u64,
         completed: bool,
         checkpoint: Option<String>,
+        parents: Vec<String>,
     }
     #[derive(Default)]
     struct FakeLeases {
@@ -331,6 +540,7 @@ mod tests {
                     lease_counter: r.counter,
                     completed: r.completed,
                     checkpoint: r.checkpoint.clone(),
+                    parents: r.parents.clone(),
                 })
                 .collect())
         }
@@ -379,6 +589,53 @@ mod tests {
             r.owner = None;
             r.counter = counter + 1;
             Ok(())
+        }
+        async fn create_shard_lease(
+            &self,
+            key: &str,
+            parents: &[ShardId],
+        ) -> Result<(), WorkerError> {
+            self.rows
+                .lock()
+                .unwrap()
+                .entry(key.to_string())
+                .or_insert_with(|| State {
+                    parents: parents.to_vec(),
+                    ..Default::default()
+                });
+            Ok(())
+        }
+        async fn try_acquire_leadership(
+            &self,
+            key: &str,
+            owner: &str,
+            expected: Option<u64>,
+        ) -> Result<Option<u64>, WorkerError> {
+            let mut rows = self.rows.lock().unwrap();
+            match expected {
+                None => {
+                    if rows.contains_key(key) {
+                        return Ok(None);
+                    }
+                    rows.insert(
+                        key.to_string(),
+                        State {
+                            owner: Some(owner.to_string()),
+                            counter: 1,
+                            ..Default::default()
+                        },
+                    );
+                    Ok(Some(1))
+                }
+                Some(c) => match rows.get_mut(key) {
+                    Some(r) if r.counter == c => {
+                        r.owner = Some(owner.to_string());
+                        r.counter = c + 1;
+                        Ok(Some(c + 1))
+                    }
+                    _ => Ok(None),
+                },
+            }
         }
     }
 
@@ -648,6 +905,7 @@ mod tests {
                     counter: 3,
                     completed: false,
                     checkpoint: None,
+                    parents: vec![],
                 },
             );
             rows.insert(
@@ -657,6 +915,7 @@ mod tests {
                     counter: 1,
                     completed: false,
                     checkpoint: None,
+                    parents: vec![],
                 },
             );
             rows.insert(
@@ -666,6 +925,7 @@ mod tests {
                     counter: 5,
                     completed: true,
                     checkpoint: None,
+                    parents: vec![],
                 },
             );
         }
@@ -701,6 +961,276 @@ mod tests {
         assert!(
             rows["done"].owner.is_some(),
             "a completed lease is not released"
+        );
+    }
+
+    /// A source that records how many times `describe_shards` (DescribeStream)
+    /// is called — the metric the leader-based syncer exists to minimize.
+    struct CountingSource {
+        metas: Vec<ShardMeta>,
+        data: HashMap<ShardId, Vec<Record>>,
+        describe_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl AsyncStreamSource for CountingSource {
+        async fn describe_shards(&self) -> Result<Vec<ShardMeta>, WorkerError> {
+            self.describe_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.metas.clone())
+        }
+        async fn get_records(
+            &self,
+            shard: &str,
+            after: Option<String>,
+        ) -> Result<RecordBatch, WorkerError> {
+            let all = self.data.get(shard).cloned().unwrap_or_default();
+            let records = match after {
+                None => all,
+                Some(tok) => match all.iter().position(|r| r.seq == tok) {
+                    Some(i) => all[i + 1..].to_vec(),
+                    None => all,
+                },
+            };
+            Ok(RecordBatch {
+                records,
+                shard_end: true,
+            })
+        }
+    }
+
+    /// A follower (another worker already holds a live leader lease) must NOT
+    /// call DescribeStream at all — it reconstructs the shard graph from the
+    /// lease rows the leader published, and still works its share of shards.
+    /// This is the whole point of the leader-based syncer vs KCLv1.
+    #[tokio::test]
+    async fn follower_does_not_call_describe_stream() {
+        let describe_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut data = HashMap::new();
+        data.insert("s0".to_string(), vec![rec("s0", "1")]);
+        data.insert("s1".to_string(), vec![rec("s1", "2")]);
+        let source = CountingSource {
+            // If the follower ever (incorrectly) called describe, it'd see these.
+            metas: vec![
+                ShardMeta {
+                    id: "s0".into(),
+                    parents: vec![],
+                },
+                ShardMeta {
+                    id: "s1".into(),
+                    parents: vec![],
+                },
+            ],
+            data,
+            describe_calls: describe_calls.clone(),
+        };
+
+        let leases = FakeLeases::default();
+        {
+            let mut rows = leases.rows.lock().unwrap();
+            // Another worker is the live leader.
+            rows.insert(
+                LEADER_LEASE_KEY.to_string(),
+                State {
+                    owner: Some("leader-x".into()),
+                    counter: 5,
+                    ..Default::default()
+                },
+            );
+            // ...and it already published two shards as unowned leases.
+            rows.insert("s0".into(), State::default());
+            rows.insert("s1".into(), State::default());
+        }
+
+        let sink: Sink = Arc::new(Mutex::new(HashMap::new()));
+        let factory = Arc::new(RecordingFactory { sink: sink.clone() });
+        let fleet = Fleet::new(
+            source,
+            leases,
+            Arc::new(SyncConsumerFactory::new(factory)),
+            FleetConfig {
+                owner: "w2".into(),
+                max_leases: 100,
+                lease_duration_ms: 1000,
+                poll_interval_ms: 1,
+            },
+        );
+
+        let mut coordinator = LeaseCoordinator::new("w2".to_string(), 100, 1000);
+        let mut leadership = Leadership::new("w2", 1000);
+        // now_ms=0 → first sighting of the leader lease → treated as fresh/alive,
+        // so w2 does not win leadership.
+        fleet
+            .run_cycle(&mut coordinator, &mut leadership, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            describe_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "follower must not call DescribeStream"
+        );
+        let m = sink.lock().unwrap();
+        assert_eq!(m.get("s0").unwrap(), &vec!["1"]);
+        assert_eq!(m.get("s1").unwrap(), &vec!["2"]);
+    }
+
+    /// The elected leader calls DescribeStream and publishes shards (with
+    /// parents) into the lease table, gating a child lease until its parent
+    /// completes — so a single worker drives the whole graph via one syncer.
+    #[tokio::test]
+    async fn leader_publishes_shards_and_gates_child_on_parent() {
+        let describe_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut data = HashMap::new();
+        data.insert("p".to_string(), vec![rec("p", "1")]);
+        data.insert("c".to_string(), vec![rec("c", "2")]);
+        let source = CountingSource {
+            metas: vec![
+                ShardMeta {
+                    id: "c".into(),
+                    parents: vec!["p".into()],
+                },
+                ShardMeta {
+                    id: "p".into(),
+                    parents: vec![],
+                },
+            ],
+            data,
+            describe_calls: describe_calls.clone(),
+        };
+        let leases = FakeLeases::default();
+        let sink: Sink = Arc::new(Mutex::new(HashMap::new()));
+        let factory = Arc::new(RecordingFactory { sink: sink.clone() });
+        let fleet = Fleet::new(
+            source,
+            leases,
+            Arc::new(SyncConsumerFactory::new(factory)),
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 1000,
+                poll_interval_ms: 1,
+            },
+        );
+        fleet.run_until_complete(10).await.unwrap();
+
+        // The leader ran shard sync (called DescribeStream at least once).
+        assert!(describe_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        // Both the parent and (later) the child were published + drained.
+        assert!(fleet.leases.rows.lock().unwrap().contains_key("c"));
+        let m = sink.lock().unwrap();
+        assert_eq!(m.get("p").unwrap(), &vec!["1"]);
+        assert_eq!(m.get("c").unwrap(), &vec!["2"]);
+    }
+
+    /// A source that counts full `describe_shards` (DescribeStream) calls
+    /// separately from targeted `describe_child_shards` (CHILD_SHARDS) calls —
+    /// so we can assert the leader avoids full re-scans.
+    struct TrackingSource {
+        metas: Vec<ShardMeta>,
+        data: HashMap<ShardId, Vec<Record>>,
+        full_describes: Arc<std::sync::atomic::AtomicUsize>,
+        child_describes: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl AsyncStreamSource for TrackingSource {
+        async fn describe_shards(&self) -> Result<Vec<ShardMeta>, WorkerError> {
+            self.full_describes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.metas.clone())
+        }
+        async fn get_records(
+            &self,
+            shard: &str,
+            after: Option<String>,
+        ) -> Result<RecordBatch, WorkerError> {
+            let all = self.data.get(shard).cloned().unwrap_or_default();
+            let records = match after {
+                None => all,
+                Some(tok) => match all.iter().position(|r| r.seq == tok) {
+                    Some(i) => all[i + 1..].to_vec(),
+                    None => all,
+                },
+            };
+            Ok(RecordBatch {
+                records,
+                shard_end: true,
+            })
+        }
+        // Override: the efficient CHILD_SHARDS path (counted separately, and
+        // crucially does NOT do a full re-scan).
+        async fn describe_child_shards(&self, parent: &str) -> Result<Vec<ShardMeta>, WorkerError> {
+            self.child_describes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self
+                .metas
+                .iter()
+                .filter(|m| m.parents.iter().any(|p| p == parent))
+                .cloned()
+                .collect())
+        }
+    }
+
+    /// Draining a full reshard (root → child → grandchild) must cost exactly ONE
+    /// full DescribeStream (the one-time seed); every subsequent child is found
+    /// via the targeted CHILD_SHARDS path. This is the DescribeStream-efficiency
+    /// guarantee that KCLv1 (full scan every worker every cycle) fails.
+    #[tokio::test]
+    async fn leader_seeds_once_then_uses_child_shards_filter() {
+        let full = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let child = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut data = HashMap::new();
+        data.insert("g0".to_string(), vec![rec("g0", "1")]);
+        data.insert("g1".to_string(), vec![rec("g1", "2")]);
+        data.insert("g2".to_string(), vec![rec("g2", "3")]);
+        let source = TrackingSource {
+            metas: vec![
+                ShardMeta {
+                    id: "g0".into(),
+                    parents: vec![],
+                },
+                ShardMeta {
+                    id: "g1".into(),
+                    parents: vec!["g0".into()],
+                },
+                ShardMeta {
+                    id: "g2".into(),
+                    parents: vec!["g1".into()],
+                },
+            ],
+            data,
+            full_describes: full.clone(),
+            child_describes: child.clone(),
+        };
+        let sink: Sink = Arc::new(Mutex::new(HashMap::new()));
+        let factory = Arc::new(RecordingFactory { sink: sink.clone() });
+        let fleet = Fleet::new(
+            source,
+            FakeLeases::default(),
+            Arc::new(SyncConsumerFactory::new(factory)),
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 1000,
+                poll_interval_ms: 1,
+            },
+        );
+        fleet.run_until_complete(10).await.unwrap();
+
+        // Whole 3-level lineage drained in order...
+        let m = sink.lock().unwrap();
+        assert_eq!(m.get("g0").unwrap(), &vec!["1"]);
+        assert_eq!(m.get("g1").unwrap(), &vec!["2"]);
+        assert_eq!(m.get("g2").unwrap(), &vec!["3"]);
+        // ...with exactly ONE full DescribeStream (the seed)...
+        assert_eq!(
+            full.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "exactly one full DescribeStream (seed); no full re-scans"
+        );
+        // ...and children discovered via the CHILD_SHARDS filter (g0→g1, g1→g2).
+        assert!(
+            child.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+            "children found via CHILD_SHARDS, not full scans"
         );
     }
 }

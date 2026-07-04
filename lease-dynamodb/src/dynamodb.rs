@@ -21,6 +21,7 @@ const LEASE_OWNER: &str = "leaseOwner";
 const LEASE_COUNTER: &str = "leaseCounter";
 const CHECKPOINT: &str = "checkpoint";
 const COMPLETED: &str = "completed";
+const PARENTS: &str = "parentShardIds";
 
 /// Result of a conditional lease mutation.
 #[derive(Debug)]
@@ -160,6 +161,7 @@ impl DynamoDbLeaseStore {
                     lease_counter: 1,
                     checkpoint: None,
                     completed: false,
+                    parents: vec![],
                 })
             }
             Err(e) => {
@@ -201,6 +203,7 @@ impl DynamoDbLeaseStore {
                 lease_counter: seen_counter + 1,
                 checkpoint: None,
                 completed: false,
+                parents: vec![],
             }),
             Err(e) => Err(classify(e)),
         }
@@ -314,6 +317,95 @@ impl DynamoDbLeaseStore {
     }
 }
 
+impl DynamoDbLeaseStore {
+    /// Publish a shard as an unowned lease carrying its parents, create-if-absent.
+    /// Called only by the shard-sync leader. An existing lease (owned or not) is
+    /// left untouched — the `attribute_not_exists` guard makes this idempotent, so
+    /// a re-sync never clobbers in-progress ownership/checkpoint state.
+    pub async fn create_shard_lease(
+        &self,
+        lease_key: &str,
+        parents: &[String],
+    ) -> Result<(), LeaseError> {
+        let mut put = self
+            .client
+            .put_item()
+            .table_name(&self.table)
+            .item(LEASE_KEY, AttributeValue::S(lease_key.to_string()))
+            .item(LEASE_COUNTER, AttributeValue::N("0".into()))
+            .condition_expression("attribute_not_exists(leaseKey)");
+        if !parents.is_empty() {
+            put = put.item(
+                PARENTS,
+                AttributeValue::L(
+                    parents
+                        .iter()
+                        .map(|p| AttributeValue::S(p.clone()))
+                        .collect(),
+                ),
+            );
+        }
+        match put.send().await {
+            Ok(_) => Ok(()),
+            // Lease already exists → nothing to do (idempotent).
+            Err(e) if e.code() == Some(CONDITIONAL_CHECK_FAILED) => Ok(()),
+            Err(e) => Err(LeaseError::Aws(Box::new(e))),
+        }
+    }
+
+    /// Optimistic leader-lease bid — see the `AsyncLeaseStore` trait doc.
+    /// `None` = create-if-absent (vacant); `Some(c)` = steal an expired leader
+    /// conditioned on counter `c`. Returns the held counter, or `None` if the
+    /// race was lost.
+    pub async fn try_acquire_leadership(
+        &self,
+        lease_key: &str,
+        owner: &str,
+        expected: Option<u64>,
+    ) -> Result<Option<u64>, LeaseError> {
+        match expected {
+            None => {
+                let r = self
+                    .client
+                    .put_item()
+                    .table_name(&self.table)
+                    .item(LEASE_KEY, AttributeValue::S(lease_key.to_string()))
+                    .item(LEASE_OWNER, AttributeValue::S(owner.to_string()))
+                    .item(LEASE_COUNTER, AttributeValue::N("1".into()))
+                    .condition_expression("attribute_not_exists(leaseKey)")
+                    .send()
+                    .await;
+                match r {
+                    Ok(_) => Ok(Some(1)),
+                    Err(e) if e.code() == Some(CONDITIONAL_CHECK_FAILED) => Ok(None),
+                    Err(e) => Err(LeaseError::Aws(Box::new(e))),
+                }
+            }
+            Some(c) => {
+                // Steal regardless of current owner, but only if the counter has
+                // NOT advanced since we observed the expired lease.
+                let r = self
+                    .client
+                    .update_item()
+                    .table_name(&self.table)
+                    .key(LEASE_KEY, AttributeValue::S(lease_key.to_string()))
+                    .update_expression("SET leaseOwner = :o, leaseCounter = leaseCounter + :one")
+                    .condition_expression("leaseCounter = :c")
+                    .expression_attribute_values(":o", AttributeValue::S(owner.to_string()))
+                    .expression_attribute_values(":one", AttributeValue::N("1".into()))
+                    .expression_attribute_values(":c", AttributeValue::N(c.to_string()))
+                    .send()
+                    .await;
+                match r {
+                    Ok(_) => Ok(Some(c + 1)),
+                    Err(e) if e.code() == Some(CONDITIONAL_CHECK_FAILED) => Ok(None),
+                    Err(e) => Err(LeaseError::Aws(Box::new(e))),
+                }
+            }
+        }
+    }
+}
+
 fn classify<E>(e: E) -> LeaseError
 where
     E: ProvideErrorMetadata + std::error::Error + Send + Sync + 'static,
@@ -342,5 +434,14 @@ fn item_to_lease(item: &HashMap<String, AttributeValue>) -> Lease {
             .and_then(|v| v.as_bool().ok())
             .copied()
             .unwrap_or(false),
+        parents: item
+            .get(PARENTS)
+            .and_then(|v| v.as_l().ok())
+            .map(|l| {
+                l.iter()
+                    .filter_map(|v| v.as_s().ok().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
     }
 }

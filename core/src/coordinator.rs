@@ -23,6 +23,12 @@ pub struct RawLease {
     /// coordinator ignores this; the fleet uses it to resume a shard task from
     /// the last persisted position instead of re-reading from the beginning.
     pub checkpoint: Option<String>,
+    /// Shard lineage (parent shard ids), published on the lease row by the
+    /// shard-sync leader so that non-leader workers can reconstruct the shard
+    /// graph — and enforce parent-before-child — WITHOUT calling DescribeStream
+    /// themselves. The coordinator's take logic ignores this; see
+    /// [`crate::leader`]. Empty for the leader sentinel and for root shards.
+    pub parents: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -123,6 +129,7 @@ mod tests {
             lease_counter: counter,
             completed,
             checkpoint: None,
+            parents: vec![],
         }
     }
 

@@ -22,7 +22,7 @@ mod ipc;
 use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
 use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
 use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
-use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig};
+use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig, Leadership};
 use ipc::{Ipc, IpcConsumerFactory};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -114,13 +114,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // arrives, or every shard's lease completes.
     let mut coordinator =
         LeaseCoordinator::new(cfg.owner.clone(), cfg.max_leases, cfg.lease_duration_ms);
+    let mut leadership = Leadership::new(cfg.owner.clone(), cfg.lease_duration_ms);
     let start = Instant::now();
     loop {
         if ipc.is_stopped() {
             break;
         }
         let now_ms = start.elapsed().as_millis() as u64;
-        match fleet.run_cycle(&mut coordinator, now_ms).await {
+        match fleet
+            .run_cycle(&mut coordinator, &mut leadership, now_ms)
+            .await
+        {
             Ok(true) => {
                 eprintln!("[sidecar] all shards complete");
                 break;

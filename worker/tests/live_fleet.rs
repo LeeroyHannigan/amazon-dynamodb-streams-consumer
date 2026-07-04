@@ -216,11 +216,15 @@ async fn run_fleet(
     // MORE cycles to prove the fleet does NOT re-deliver — each shard task
     // resumes from its persisted checkpoint, not from TRIM_HORIZON.
     let mut coordinator = LeaseCoordinator::new("fleet-w1".to_string(), 100, 60_000);
+    let mut leadership =
+        amazon_dynamodb_streams_consumer_worker::fleet::Leadership::new("fleet-w1", 60_000);
     let start = std::time::Instant::now();
     let mut confirm_cycles = 0;
     for _ in 0..15 {
         let now_ms = start.elapsed().as_millis() as u64;
-        let _ = fleet.run_cycle(&mut coordinator, now_ms).await?;
+        let _ = fleet
+            .run_cycle(&mut coordinator, &mut leadership, now_ms)
+            .await?;
         let total: usize = sink.lock().unwrap().values().map(|v| v.len()).sum();
         if total >= 5 {
             confirm_cycles += 1;

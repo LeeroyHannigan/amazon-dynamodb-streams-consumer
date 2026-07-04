@@ -18,6 +18,9 @@ impl AsyncStreamSource for DdbStreamsSource {
     ) -> Result<RecordBatch, WorkerError> {
         DdbStreamsSource::get_records(self, shard, after.as_deref()).await
     }
+    async fn describe_child_shards(&self, parent: &str) -> Result<Vec<ShardMeta>, WorkerError> {
+        DdbStreamsSource::describe_child_shards(self, parent).await
+    }
 }
 
 fn box_lease(e: LeaseError) -> WorkerError {
@@ -47,6 +50,7 @@ impl AsyncLeaseStore for DynamoDbLeaseStore {
                     lease_counter: l.lease_counter,
                     completed: l.completed,
                     checkpoint: l.checkpoint,
+                    parents: l.parents,
                 },
             )
             .collect())
@@ -84,6 +88,21 @@ impl AsyncLeaseStore for DynamoDbLeaseStore {
     }
     async fn release(&self, key: &str, owner: &str, counter: u64) -> Result<(), WorkerError> {
         DynamoDbLeaseStore::release(self, key, owner, counter)
+            .await
+            .map_err(box_lease)
+    }
+    async fn create_shard_lease(&self, key: &str, parents: &[String]) -> Result<(), WorkerError> {
+        DynamoDbLeaseStore::create_shard_lease(self, key, parents)
+            .await
+            .map_err(box_lease)
+    }
+    async fn try_acquire_leadership(
+        &self,
+        key: &str,
+        owner: &str,
+        expected: Option<u64>,
+    ) -> Result<Option<u64>, WorkerError> {
+        DynamoDbLeaseStore::try_acquire_leadership(self, key, owner, expected)
             .await
             .map_err(box_lease)
     }
