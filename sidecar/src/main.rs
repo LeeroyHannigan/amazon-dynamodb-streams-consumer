@@ -114,11 +114,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Model A: if the standard OTEL exporter env var is set, attach the OTLP
     // metrics sink (feature-gated so the default build has no OTEL deps).
     #[cfg(feature = "otel")]
+    let mut otel_sink: Option<std::sync::Arc<otel::OtelMetricsSink>> = None;
+    #[cfg(feature = "otel")]
     {
         if std::env::var("OTEL_METRICS_EXPORTER").is_ok() {
-            match otel::OtelMetricsSink::from_env() {
+            match otel::OtelMetricsSink::from_env().await {
                 Ok(sink) => {
-                    fleet = fleet.with_metrics(std::sync::Arc::new(sink));
+                    let sink = std::sync::Arc::new(sink);
+                    fleet = fleet.with_metrics(sink.clone());
+                    otel_sink = Some(sink);
                     eprintln!("[sidecar] OTLP metrics enabled");
                 }
                 Err(e) => eprintln!("[sidecar] OTLP metrics init failed: {e}"),
@@ -161,6 +165,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match fleet.release_owned().await {
         Ok(n) => eprintln!("[sidecar] released {n} lease(s)"),
         Err(e) => eprintln!("[sidecar] lease release error: {e}"),
+    }
+
+    // Flush any buffered metrics before exit so the final interval isn't lost.
+    #[cfg(feature = "otel")]
+    if let Some(s) = &otel_sink {
+        match s.force_flush() {
+            Ok(_) => eprintln!("[sidecar] flushed final metrics"),
+            Err(e) => eprintln!("[sidecar] metrics flush error: {e}"),
+        }
     }
     ipc.shutdown("sidecar stopping").await;
     eprintln!("[sidecar] stopped");

@@ -19,13 +19,34 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-
 async-trait = "0.1"
 
 # OTEL/OTLP metrics export (Model A). Feature-gated so the lean default build
-# pulls none of the OpenTelemetry dependency tree.
+# pulls none of the OpenTelemetry dependency tree. OTLP/HTTP + optional SigV4 so
+# it can target the native CloudWatch OTLP endpoint directly (no collector).
 opentelemetry = { version = "0.27", optional = true }
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "metrics"], optional = true }
-opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "metrics"], optional = true }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["http-proto", "metrics"], optional = true }
+opentelemetry-http = { version = "0.27", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+http = { version = "1", optional = true }
+bytes = { version = "1", optional = true }
+aws-config = { version = "1", optional = true }
+aws-credential-types = { version = "1", optional = true }
+aws-sigv4 = { version = "1", optional = true }
+aws-smithy-runtime-api = { version = "1", features = ["client"], optional = true }
 
 [features]
-otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-http",
+    "dep:reqwest",
+    "dep:http",
+    "dep:bytes",
+    "dep:aws-config",
+    "dep:aws-credential-types",
+    "dep:aws-sigv4",
+    "dep:aws-smithy-runtime-api",
+]
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "process"] }
