@@ -23,7 +23,9 @@
 
 use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
 use amazon_dynamodb_streams_consumer_core::record::{AttrValue, StreamRecord};
-use amazon_dynamodb_streams_consumer_core::{Record, RecordProcessor, RecordProcessorFactory, ShardId};
+use amazon_dynamodb_streams_consumer_core::{
+    Record, RecordProcessor, RecordProcessorFactory, ShardId,
+};
 use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
 use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
 use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig, Leadership};
@@ -92,7 +94,8 @@ impl RecordProcessor for CheckProc {
                     c.shard_order_violations += 1;
                 }
             }
-            c.per_shard_last_seq.insert(self.shard.clone(), r.seq.clone());
+            c.per_shard_last_seq
+                .insert(self.shard.clone(), r.seq.clone());
             // Per-key ordering across the split (decode pk/sk from the payload).
             if let Ok(sr) = StreamRecord::decode(&r.data) {
                 let pk = match sr.keys.get("pk") {
@@ -118,7 +121,10 @@ impl RecordProcessor for CheckProc {
 }
 
 fn secs_env(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -157,7 +163,12 @@ async fn live_reshard_correctness() {
         .expect("create data table");
 
     let stream_arn = loop {
-        let d = db.describe_table().table_name(&data_table).send().await.unwrap();
+        let d = db
+            .describe_table()
+            .table_name(&data_table)
+            .send()
+            .await
+            .unwrap();
         let t = d.table().unwrap();
         if t.table_status() == Some(&TableStatus::Active) {
             break t.latest_stream_arn().unwrap().to_string();
@@ -315,7 +326,10 @@ async fn live_reshard_correctness() {
 
     assert_eq!(c.dups, 0, "duplicates delivered");
     assert_eq!(c.shard_order_violations, 0, "per-shard ordering violated");
-    assert_eq!(c.key_order_violations, 0, "per-key ordering violated across reshard");
+    assert_eq!(
+        c.key_order_violations, 0,
+        "per-key ordering violated across reshard"
+    );
     assert!(
         c.observed >= target,
         "incompleteness: observed {} < written {target} (child shards not fully drained?)",
