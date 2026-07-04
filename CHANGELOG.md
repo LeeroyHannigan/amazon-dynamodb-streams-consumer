@@ -10,6 +10,16 @@ single `vX.Y.Z` git tag releases the whole project.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-04
+
+### Added
+- Worker-level `record_format` option (`native` default, `ddb_json` opt-in),
+  set once for the whole processor across all clients. `native` delivers
+  decoded native values (no DynamoDB-JSON unmarshalling burden); `ddb_json`
+  delivers canonical DynamoDB JSON (the `{"S"|"N"|"BOOL"|"NULL"|"B"|"M"|"L"|
+  "SS"|"NS"|"BS"}` shape the AWS SDKs / `boto3` consume) for SDK interop and
+  KCL migration.
+
 ## [0.1.2] - 2026-07-04
 
 ### Fixed
@@ -44,7 +54,8 @@ Initial alpha release.
 - Sidecar binary and a newline-delimited JSON protocol for language clients.
 - Python client (`dynamodb_streams_consumer`) with a zero-dependency stdio bridge.
 
-[Unreleased]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/LeeroyHannigan/amazon-dynamodb-streams-consumer/releases/tag/v0.1.0

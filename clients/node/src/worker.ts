@@ -1,6 +1,6 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import * as readline from 'node:readline';
-import { recordFromWire, Record } from './record';
+import { recordFromWire, Record, RecordFormat } from './record';
 import { discoverSidecar, VERSION } from './sidecar';
 
 export { VERSION };
@@ -16,6 +16,8 @@ export interface WorkerConfig {
   processor: RecordProcessor;
   owner?: string;
   region?: string;
+  /** How attribute values are exposed: 'native' (default) or 'ddb_json'. */
+  recordFormat?: RecordFormat;
   maxLeases?: number;
   leaseDurationMs?: number;
   pollIntervalMs?: number;
@@ -103,7 +105,9 @@ export class Worker {
         switch (msg.type) {
           case 'records': {
             const shard = msg.shard as string;
-            const recs = (msg.records ?? []).map((r) => recordFromWire(shard, r as never));
+            const recs = (msg.records ?? []).map((r) =>
+              recordFromWire(shard, r as never, this.config.recordFormat ?? 'native'),
+            );
             this.config.processor.processRecords(recs);
             this.send({ type: 'checkpoint', shard, seq: msg.last_seq });
             break;

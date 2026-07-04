@@ -31,11 +31,14 @@ type ShardEndedHandler interface {
 
 // Config configures a Worker. StreamArn, LeaseTable, and Processor are required.
 type Config struct {
-	StreamArn       string
-	LeaseTable      string
-	Processor       RecordProcessor
-	Owner           string
-	Region          string
+	StreamArn  string
+	LeaseTable string
+	Processor  RecordProcessor
+	Owner      string
+	Region     string
+	// RecordFormat selects how attribute values are exposed (default "native").
+	// Set to RecordFormatDDBJSON for canonical DynamoDB JSON (SDK interop).
+	RecordFormat    RecordFormat
 	MaxLeases       int
 	LeaseDurationMS int
 	PollIntervalMS  int
@@ -176,7 +179,7 @@ func (w *Worker) Run() (int, error) {
 		case "records":
 			recs := make([]Record, 0, len(msg.Records))
 			for _, wr := range msg.Records {
-				r, err := recordFromWire(msg.Shard, wr)
+				r, err := recordFromWire(msg.Shard, wr, w.cfg.RecordFormat)
 				if err != nil {
 					continue // skip an undecodable record rather than crash
 				}

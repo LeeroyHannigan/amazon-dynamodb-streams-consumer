@@ -66,14 +66,68 @@ export function decodeItem(item?: { [k: string]: unknown } | null): Item {
   return out;
 }
 
-export function recordFromWire(shard: string, w: WireRecord): Record {
+// Record shape selector, set once at the Worker level.
+//   'native'   (default) — decoded native values (decodeAttr)
+//   'ddb_json'           — canonical DynamoDB JSON ({"S"|"N"|"BOOL"|"NULL"|
+//                          "B"(base64)|"M"|"L"|"SS"|"NS"|"BS"}), the shape the
+//                          AWS SDK consumes (SDK interop / KCL parity).
+export type RecordFormat = 'native' | 'ddb_json';
+
+// Converts one wire AttrValue into canonical DynamoDB JSON.
+export function toDdbJson(v: unknown): AttrValue {
+  if (v === 'Null') return { NULL: true } as unknown as AttrValue;
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    throw new Error(`invalid attribute value: ${JSON.stringify(v)}`);
+  }
+  const obj = v as { [k: string]: unknown };
+  const tags = Object.keys(obj);
+  if (tags.length !== 1) {
+    throw new Error(`attribute must have exactly one type tag, got ${tags.length}`);
+  }
+  const tag = tags[0];
+  const val = obj[tag];
+  switch (tag) {
+    case 'S':
+      return { S: String(val) } as unknown as AttrValue;
+    case 'N':
+      return { N: String(val) } as unknown as AttrValue;
+    case 'Bool':
+      return { BOOL: Boolean(val) } as unknown as AttrValue;
+    case 'B':
+      return { B: Buffer.from(val as number[]).toString('base64') } as unknown as AttrValue;
+    case 'Ss':
+      return { SS: (val as unknown[]).map(String) } as unknown as AttrValue;
+    case 'Ns':
+      return { NS: (val as unknown[]).map(String) } as unknown as AttrValue;
+    case 'Bs':
+      return {
+        BS: (val as number[][]).map((a) => Buffer.from(a).toString('base64')),
+      } as unknown as AttrValue;
+    case 'M':
+      return { M: ddbJsonItem(val as { [k: string]: unknown }) } as unknown as AttrValue;
+    case 'L':
+      return { L: (val as unknown[]).map(toDdbJson) } as unknown as AttrValue;
+    default:
+      throw new Error(`unknown attribute type tag: ${tag}`);
+  }
+}
+
+export function ddbJsonItem(item?: { [k: string]: unknown } | null): Item {
+  const out: Item = {};
+  if (!item) return out;
+  for (const [k, v] of Object.entries(item)) out[k] = toDdbJson(v);
+  return out;
+}
+
+export function recordFromWire(shard: string, w: WireRecord, format: RecordFormat = 'native'): Record {
+  const conv = format === 'ddb_json' ? ddbJsonItem : decodeItem;
   return {
     shardId: shard,
     eventName: w.event_name ?? null,
     sequenceNumber: w.sequence_number ?? null,
     streamViewType: w.stream_view_type ?? null,
-    keys: decodeItem(w.keys),
-    newImage: w.new_image ? decodeItem(w.new_image) : null,
-    oldImage: w.old_image ? decodeItem(w.old_image) : null,
+    keys: conv(w.keys),
+    newImage: w.new_image ? conv(w.new_image) : null,
+    oldImage: w.old_image ? conv(w.old_image) : null,
   };
 }

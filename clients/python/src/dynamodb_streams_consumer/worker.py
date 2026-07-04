@@ -32,7 +32,7 @@ import subprocess
 import threading
 from typing import Any, List, Optional, Protocol, Sequence
 
-from .record import Record
+from .record import DDB_JSON, NATIVE, Record
 
 DEFAULT_BINARY = "amazon-dynamodb-streams-consumer-sidecar"
 
@@ -77,6 +77,7 @@ class Worker:
         *,
         owner: Optional[str] = None,
         region: Optional[str] = None,
+        record_format: str = NATIVE,
         max_leases: Optional[int] = None,
         lease_duration_ms: Optional[int] = None,
         poll_interval_ms: Optional[int] = None,
@@ -89,6 +90,11 @@ class Worker:
         self.processor = processor
         self.owner = owner
         self.region = region
+        if record_format not in (NATIVE, DDB_JSON):
+            raise ValueError(
+                f"record_format must be {NATIVE!r} or {DDB_JSON!r}, got {record_format!r}"
+            )
+        self.record_format = record_format
         self.max_leases = max_leases
         self.lease_duration_ms = lease_duration_ms
         self.poll_interval_ms = poll_interval_ms
@@ -174,7 +180,7 @@ class Worker:
         kind = msg.get("type")
         if kind == "records":
             shard = msg["shard"]
-            records = [Record.from_wire(shard, r) for r in msg.get("records", [])]
+            records = [Record.from_wire(shard, r, self.record_format) for r in msg.get("records", [])]
             self.processor.process_records(records)
             # Ack: durably processed up to last_seq → sidecar checkpoints it.
             self._send({"type": "checkpoint", "shard": shard, "seq": msg["last_seq"]})

@@ -1,8 +1,22 @@
 package ddbstreams
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+)
+
+// RecordFormat selects how attribute values are exposed on a Record. It is set
+// once at the Worker level (WorkerConfig.RecordFormat).
+type RecordFormat string
+
+const (
+	// RecordFormatNative (default) decodes attribute values to Go natives.
+	RecordFormatNative RecordFormat = "native"
+	// RecordFormatDDBJSON exposes canonical DynamoDB JSON (the {"S":...} /
+	// {"N":...} / {"BOOL":...} / {"NULL":true} / {"B":<base64>} / {"SS"|"NS"|
+	// "BS":...} shape the AWS SDK consumes) for SDK interop / KCL parity.
+	RecordFormatDDBJSON RecordFormat = "ddb_json"
 )
 
 // Record is one item-level change delivered from a DynamoDB stream. Attribute
@@ -29,16 +43,20 @@ type wireRecord struct {
 	OldImage       map[string]json.RawMessage `json:"old_image"`
 }
 
-func recordFromWire(shard string, w wireRecord) (Record, error) {
-	keys, err := decodeItem(w.Keys)
+func recordFromWire(shard string, w wireRecord, format RecordFormat) (Record, error) {
+	conv := decodeItem
+	if format == RecordFormatDDBJSON {
+		conv = ddbJSONItem
+	}
+	keys, err := conv(w.Keys)
 	if err != nil {
 		return Record{}, err
 	}
-	ni, err := decodeItem(w.NewImage)
+	ni, err := conv(w.NewImage)
 	if err != nil {
 		return Record{}, err
 	}
-	oi, err := decodeItem(w.OldImage)
+	oi, err := conv(w.OldImage)
 	if err != nil {
 		return Record{}, err
 	}
@@ -174,4 +192,118 @@ func decodeBytes(val json.RawMessage) ([]byte, error) {
 		out[i] = byte(n)
 	}
 	return out, nil
+}
+
+// ddbJSONItem converts a wire attribute map into canonical DynamoDB JSON.
+func ddbJSONItem(item map[string]json.RawMessage) (map[string]any, error) {
+	out := make(map[string]any, len(item))
+	for k, raw := range item {
+		v, err := ddbJSONAttr(raw)
+		if err != nil {
+			return nil, fmt.Errorf("attr %q: %w", k, err)
+		}
+		out[k] = v
+	}
+	return out, nil
+}
+
+// ddbJSONAttr maps one wire AttrValue to the canonical DynamoDB JSON shape the
+// AWS SDK consumes (S/N/BOOL/NULL/B(base64)/M/L/SS/NS/BS).
+func ddbJSONAttr(raw json.RawMessage) (any, error) {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		if s == "Null" {
+			return map[string]any{"NULL": true}, nil
+		}
+		return nil, fmt.Errorf("unexpected bare string attribute %q", s)
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, fmt.Errorf("attribute is neither Null nor a tagged object: %w", err)
+	}
+	if len(obj) != 1 {
+		return nil, fmt.Errorf("attribute must have exactly one type tag, got %d", len(obj))
+	}
+	var tag string
+	var val json.RawMessage
+	for tag, val = range obj {
+	}
+	switch tag {
+	case "S":
+		var str string
+		if err := json.Unmarshal(val, &str); err != nil {
+			return nil, err
+		}
+		return map[string]any{"S": str}, nil
+	case "N":
+		var str string
+		if err := json.Unmarshal(val, &str); err != nil {
+			return nil, err
+		}
+		return map[string]any{"N": str}, nil
+	case "Bool":
+		var b bool
+		if err := json.Unmarshal(val, &b); err != nil {
+			return nil, err
+		}
+		return map[string]any{"BOOL": b}, nil
+	case "B":
+		b, err := decodeBytes(val)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"B": base64.StdEncoding.EncodeToString(b)}, nil
+	case "Ss":
+		var ss []string
+		if err := json.Unmarshal(val, &ss); err != nil {
+			return nil, err
+		}
+		return map[string]any{"SS": ss}, nil
+	case "Ns":
+		var ns []string
+		if err := json.Unmarshal(val, &ns); err != nil {
+			return nil, err
+		}
+		return map[string]any{"NS": ns}, nil
+	case "Bs":
+		var arrs []json.RawMessage
+		if err := json.Unmarshal(val, &arrs); err != nil {
+			return nil, err
+		}
+		out := make([]string, len(arrs))
+		for i, a := range arrs {
+			b, err := decodeBytes(a)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = base64.StdEncoding.EncodeToString(b)
+		}
+		return map[string]any{"BS": out}, nil
+	case "M":
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(val, &m); err != nil {
+			return nil, err
+		}
+		inner, err := ddbJSONItem(m)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"M": inner}, nil
+	case "L":
+		var arr []json.RawMessage
+		if err := json.Unmarshal(val, &arr); err != nil {
+			return nil, err
+		}
+		out := make([]any, len(arr))
+		for i, e := range arr {
+			v, err := ddbJSONAttr(e)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = v
+		}
+		return map[string]any{"L": out}, nil
+	default:
+		return nil, fmt.Errorf("unknown attribute type tag %q", tag)
+	}
 }

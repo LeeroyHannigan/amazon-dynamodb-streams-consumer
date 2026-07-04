@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { decodeAttr, recordFromWire } = require('../dist/record');
+const { decodeAttr, recordFromWire, toDdbJson } = require('../dist/record');
 
 test('scalars', () => {
   assert.strictEqual(decodeAttr({ S: 'hi' }), 'hi');
@@ -43,4 +43,27 @@ test('record from wire', () => {
   assert.deepStrictEqual(r.keys, { pk: 'k1' });
   assert.deepStrictEqual(r.newImage, { pk: 'k1', active: true });
   assert.strictEqual(r.oldImage, null);
+});
+
+test('ddb_json canonical shape', () => {
+  assert.deepStrictEqual(toDdbJson({ S: 'k1' }), { S: 'k1' });
+  assert.deepStrictEqual(toDdbJson({ N: '42' }), { N: '42' });
+  assert.deepStrictEqual(toDdbJson({ Bool: true }), { BOOL: true });
+  assert.deepStrictEqual(toDdbJson('Null'), { NULL: true });
+  assert.deepStrictEqual(toDdbJson({ B: [1, 2, 3] }), { B: 'AQID' });
+  assert.deepStrictEqual(toDdbJson({ Ss: ['a', 'b'] }), { SS: ['a', 'b'] });
+  assert.deepStrictEqual(toDdbJson({ Ns: ['1', '2.5'] }), { NS: ['1', '2.5'] });
+  assert.deepStrictEqual(toDdbJson({ Bs: [[9]] }), { BS: ['CQ=='] });
+  assert.deepStrictEqual(toDdbJson({ M: { inner: { N: '7' } } }), { M: { inner: { N: '7' } } });
+  assert.deepStrictEqual(toDdbJson({ L: [{ S: 'x' }, 'Null'] }), { L: [{ S: 'x' }, { NULL: true }] });
+});
+
+test('recordFromWire ddb_json format', () => {
+  const wire = { keys: { pk: { S: 'k1' }, sk: { N: '42' } }, new_image: { a: { Bool: true } } };
+  const r = recordFromWire('shard-1', wire, 'ddb_json');
+  assert.deepStrictEqual(r.keys, { pk: { S: 'k1' }, sk: { N: '42' } });
+  assert.deepStrictEqual(r.newImage, { a: { BOOL: true } });
+  // native default unchanged
+  const n = recordFromWire('shard-1', wire);
+  assert.deepStrictEqual(n.keys, { pk: 'k1', sk: '42' });
 });

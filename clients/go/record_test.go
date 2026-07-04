@@ -65,7 +65,7 @@ func TestRecordFromWire(t *testing.T) {
 	if err := json.Unmarshal([]byte(line), &w); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	r, err := recordFromWire("shardId-1", w)
+	r, err := recordFromWire("shardId-1", w, RecordFormatNative)
 	if err != nil {
 		t.Fatalf("recordFromWire: %v", err)
 	}
@@ -80,5 +80,43 @@ func TestRecordFromWire(t *testing.T) {
 	}
 	if r.OldImage != nil {
 		t.Errorf("old_image = %v, want nil", r.OldImage)
+	}
+}
+
+func TestRecordFromWireDDBJSON(t *testing.T) {
+	line := `{"keys":{"pk":{"S":"k1"},"sk":{"N":"42"}},` +
+		`"new_image":{"active":{"Bool":true},"note":"Null","blob":{"B":[1,2,3]},` +
+		`"tags":{"Ss":["a","b"]},"nested":{"M":{"inner":{"N":"7"}}},"list":{"L":[{"S":"x"},"Null"]}}}`
+	var w wireRecord
+	if err := json.Unmarshal([]byte(line), &w); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	r, err := recordFromWire("shardId-1", w, RecordFormatDDBJSON)
+	if err != nil {
+		t.Fatalf("recordFromWire: %v", err)
+	}
+	// Canonical DynamoDB JSON shape (consumable by the AWS SDK).
+	wantKeys := map[string]any{"pk": map[string]any{"S": "k1"}, "sk": map[string]any{"N": "42"}}
+	if !reflect.DeepEqual(r.Keys, wantKeys) {
+		t.Errorf("keys = %v", r.Keys)
+	}
+	ni := r.NewImage
+	if !reflect.DeepEqual(ni["active"], map[string]any{"BOOL": true}) {
+		t.Errorf("active = %v", ni["active"])
+	}
+	if !reflect.DeepEqual(ni["note"], map[string]any{"NULL": true}) {
+		t.Errorf("note = %v", ni["note"])
+	}
+	if !reflect.DeepEqual(ni["blob"], map[string]any{"B": "AQID"}) {
+		t.Errorf("blob = %v", ni["blob"])
+	}
+	if !reflect.DeepEqual(ni["tags"], map[string]any{"SS": []string{"a", "b"}}) {
+		t.Errorf("tags = %v", ni["tags"])
+	}
+	if !reflect.DeepEqual(ni["nested"], map[string]any{"M": map[string]any{"inner": map[string]any{"N": "7"}}}) {
+		t.Errorf("nested = %v", ni["nested"])
+	}
+	if !reflect.DeepEqual(ni["list"], map[string]any{"L": []any{map[string]any{"S": "x"}, map[string]any{"NULL": true}}}) {
+		t.Errorf("list = %v", ni["list"])
 	}
 }
