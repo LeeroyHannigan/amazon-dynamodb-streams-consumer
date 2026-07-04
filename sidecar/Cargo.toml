@@ -18,6 +18,15 @@ amazon-dynamodb-streams-consumer-worker = { path = "../worker", features = ["aws
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "io-util", "sync", "signal", "time"] }
 async-trait = "0.1"
 
+# OTEL/OTLP metrics export (Model A). Feature-gated so the lean default build
+# pulls none of the OpenTelemetry dependency tree.
+opentelemetry = { version = "0.27", optional = true }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "metrics"], optional = true }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "metrics"], optional = true }
+
+[features]
+otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp"]
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "time", "process"] }
 aws-config = { version = "1" }

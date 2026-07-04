@@ -235,6 +235,7 @@ impl DdbStreamsSource {
                     return Ok(RecordBatch {
                         records: vec![],
                         shard_end: true,
+                        millis_behind_latest: None,
                     });
                 }
                 Err(e) if is_recoverable(&e) && after.is_some() => {
@@ -245,6 +246,7 @@ impl DdbStreamsSource {
                             return Ok(RecordBatch {
                                 records: vec![],
                                 shard_end: true,
+                                millis_behind_latest: None,
                             })
                         }
                     }
@@ -274,6 +276,7 @@ impl DdbStreamsSource {
                             return Ok(RecordBatch {
                                 records: vec![],
                                 shard_end: true,
+                                millis_behind_latest: None,
                             })
                         }
                     };
@@ -289,11 +292,17 @@ impl DdbStreamsSource {
         };
 
         let mut records = Vec::new();
+        let mut newest_creation_ms: Option<i64> = None;
         for r in resp.records() {
             if let Some(sr) = r.dynamodb() {
                 let seq = sr.sequence_number().unwrap_or_default().to_string();
                 if seq.is_empty() {
                     continue;
+                }
+                // Track the newest record's creation time for MillisBehindLatest
+                // (records arrive in ascending order → last wins).
+                if let Some(t) = sr.approximate_creation_date_time() {
+                    newest_creation_ms = Some(t.to_millis().unwrap_or_else(|_| t.secs() * 1000));
                 }
                 // Carry the full typed change record (Keys/NewImage/OldImage/
                 // eventName) as the opaque payload, per KCL's RecordAdapter model.
@@ -312,7 +321,21 @@ impl DdbStreamsSource {
         self.store_cursor(shard, new_after, next.clone());
         // A closed shard yields no next iterator.
         let shard_end = next.is_none();
-        Ok(RecordBatch { records, shard_end })
+        // Consumer lag: now - newest record's ApproximateCreationDateTime. DDB
+        // Streams GetRecords has no MillisBehindLatest field, so we derive it
+        // (matching KCA). Clamped at 0 to absorb minor clock skew.
+        let millis_behind_latest = newest_creation_ms.map(|created| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(created);
+            (now - created).max(0)
+        });
+        Ok(RecordBatch {
+            records,
+            shard_end,
+            millis_behind_latest,
+        })
     }
 }
 

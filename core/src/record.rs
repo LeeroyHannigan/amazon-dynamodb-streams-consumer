@@ -45,6 +45,12 @@ pub struct StreamRecord {
     pub keys: Item,
     pub new_image: Option<Item>,
     pub old_image: Option<Item>,
+    /// `ApproximateCreationDateTime` as epoch milliseconds, when present. Used to
+    /// compute per-shard `MillisBehindLatest` (consumer lag) — DynamoDB Streams
+    /// `GetRecords` does not return a lag field (unlike Kinesis), so it is
+    /// derived from the newest record's creation time, matching KCA.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approx_creation_time_ms: Option<i64>,
 }
 
 impl StreamRecord {
@@ -91,6 +97,7 @@ mod tests {
             keys,
             new_image: Some(new_image),
             old_image: None,
+            approx_creation_time_ms: Some(1_700_000_000_000),
         };
 
         let decoded = StreamRecord::decode(&rec.encode()).unwrap();

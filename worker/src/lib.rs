@@ -335,6 +335,7 @@ mod tests {
             Ok(RecordBatch {
                 records,
                 shard_end: true,
+                millis_behind_latest: None,
             })
         }
     }

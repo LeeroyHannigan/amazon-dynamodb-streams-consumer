@@ -18,6 +18,8 @@
 //!   AWS_REGION / standard AWS env  used by the SDK for creds + region
 
 mod ipc;
+#[cfg(feature = "otel")]
+mod otel;
 
 use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
 use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
@@ -96,7 +98,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let factory = Arc::new(IpcConsumerFactory::new(ipc.clone()));
-    let fleet = Fleet::new(
+    #[cfg_attr(not(feature = "otel"), allow(unused_mut))]
+    let mut fleet = Fleet::new(
         source,
         leases,
         factory,
@@ -107,6 +110,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             poll_interval_ms: cfg.poll_interval_ms,
         },
     );
+
+    // Model A: if the standard OTEL exporter env var is set, attach the OTLP
+    // metrics sink (feature-gated so the default build has no OTEL deps).
+    #[cfg(feature = "otel")]
+    {
+        if std::env::var("OTEL_METRICS_EXPORTER").is_ok() {
+            match otel::OtelMetricsSink::from_env() {
+                Ok(sink) => {
+                    fleet = fleet.with_metrics(std::sync::Arc::new(sink));
+                    eprintln!("[sidecar] OTLP metrics enabled");
+                }
+                Err(e) => eprintln!("[sidecar] OTLP metrics init failed: {e}"),
+            }
+        }
+    }
 
     // Continuous coordination loop: each cycle scans leases, rebalances, and
     // runs one concurrent task per owned shard (which streams batches to the

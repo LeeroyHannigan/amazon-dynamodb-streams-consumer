@@ -65,6 +65,9 @@ mod from_sdk {
                 .and_then(|d| d.old_image())
                 .filter(|m| !m.is_empty())
                 .map(map_btree),
+            approx_creation_time_ms: sr
+                .and_then(|d| d.approximate_creation_date_time())
+                .map(|t| t.to_millis().unwrap_or_else(|_| t.secs() * 1000)),
         }
     }
 

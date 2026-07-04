@@ -16,6 +16,7 @@ use crate::{
 };
 use amazon_dynamodb_streams_consumer_core::coordinator::{LeaseCoordinator, RawLease};
 use amazon_dynamodb_streams_consumer_core::leader::{shard_metas_from_leases, LEADER_LEASE_KEY};
+use amazon_dynamodb_streams_consumer_core::metrics::{noop_sink, ShardMetrics, SharedMetricsSink};
 use amazon_dynamodb_streams_consumer_core::ShardId;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -128,6 +129,9 @@ pub struct Fleet<S, L> {
     config: FleetConfig,
     /// Leader-only incremental-sync bookkeeping (see [`Fleet::run_cycle`]).
     sync_state: std::sync::Mutex<SyncState>,
+    /// Metrics sink (default no-op). Emits per-batch lag/throughput,
+    /// shard-lifecycle, and DescribeStream events. Set via [`Fleet::with_metrics`].
+    metrics: SharedMetricsSink,
 }
 
 /// Shard-sync progress tracked by the leader so it can avoid full `DescribeStream`
@@ -159,7 +163,15 @@ where
             factory,
             config,
             sync_state: std::sync::Mutex::new(SyncState::default()),
+            metrics: noop_sink(),
         }
+    }
+
+    /// Attach a metrics sink (OTLP/OTEL, CloudWatch EMF, or a binding callback).
+    /// Defaults to a no-op sink, so metrics are opt-in and cost nothing unless set.
+    pub fn with_metrics(mut self, metrics: SharedMetricsSink) -> Self {
+        self.metrics = metrics;
+        self
     }
 
     /// Run coordination cycles until every shard's lease is complete or
@@ -269,6 +281,7 @@ where
                 counter,
                 checkpoint,
                 poll_interval_ms: self.config.poll_interval_ms,
+                metrics: self.metrics.clone(),
             };
             set.spawn(async move {
                 let _ = process_shard(src, lease, consumer, task).await;
@@ -312,6 +325,7 @@ where
         if !seeded {
             // One-time seed: full DescribeStream → create the root shards (those
             // whose parents are all complete; at bootstrap that's the roots).
+            self.metrics.on_describe_stream();
             for m in self.source.describe_shards().await? {
                 if m.parents.iter().all(|p| completed.contains(p)) && !existing.contains(&m.id) {
                     let _ = self.leases.create_shard_lease(&m.id, &m.parents).await;
@@ -327,6 +341,7 @@ where
             if already_synced.contains(parent) || parents_with_children.contains(parent) {
                 continue;
             }
+            self.metrics.on_describe_stream();
             match self.source.describe_child_shards(parent).await {
                 Ok(children) => {
                     for c in children {
@@ -339,6 +354,7 @@ where
                 Err(_) => {
                     // Filtered call failed → fall back to a full describe this
                     // cycle (adapter behavior). Do NOT mark synced, so we retry.
+                    self.metrics.on_describe_stream();
                     if let Ok(metas) = self.source.describe_shards().await {
                         for m in metas {
                             if m.parents.iter().all(|p| completed.contains(p))
@@ -393,6 +409,7 @@ struct ShardTask {
     /// Resume position from the lease (`None` = TRIM_HORIZON).
     checkpoint: Option<String>,
     poll_interval_ms: u64,
+    metrics: SharedMetricsSink,
 }
 
 /// Drive a single shard: deliver records in order, checkpoint/heartbeat under the
@@ -414,6 +431,7 @@ where
         mut counter,
         checkpoint,
         poll_interval_ms,
+        metrics,
     } = task;
     // Resume from the lease's persisted checkpoint (None = TRIM_HORIZON for a
     // brand-new shard). This is what makes re-processing idempotent across
@@ -442,11 +460,20 @@ where
                 }
                 Err(_) => return Ok(()), // delivery failed → stop; lease expires
             }
+            // Record delivered-batch metrics: throughput + per-shard lag
+            // (MillisBehindLatest). Emitted after successful delivery.
+            metrics.on_batch(&ShardMetrics {
+                shard_id: &shard,
+                records: batch.records.len() as u64,
+                bytes: batch.records.iter().map(|r| r.data.len() as u64).sum(),
+                millis_behind_latest: batch.millis_behind_latest,
+            });
             after = Some(last);
         }
         if batch.shard_end {
             let _ = consumer.shard_ended().await;
             let _ = leases.mark_complete(&shard, &owner, counter).await;
+            metrics.on_shard_end(&shard);
             return Ok(());
         }
         if batch.records.is_empty() {
@@ -505,6 +532,7 @@ mod tests {
             Ok(RecordBatch {
                 records,
                 shard_end: true,
+                millis_behind_latest: None,
             })
         }
     }
@@ -640,6 +668,8 @@ mod tests {
     }
 
     type Sink = Arc<Mutex<HashMap<String, Vec<String>>>>;
+    /// (shard_id, records, bytes, millis_behind_latest) captured per batch.
+    type CapturedBatch = (String, u64, u64, Option<i64>);
     struct RecordingFactory {
         sink: Sink,
     }
@@ -785,6 +815,7 @@ mod tests {
             Ok(RecordBatch {
                 records,
                 shard_end: false,
+                millis_behind_latest: None,
             })
         }
     }
@@ -994,6 +1025,7 @@ mod tests {
             Ok(RecordBatch {
                 records,
                 shard_end: true,
+                millis_behind_latest: None,
             })
         }
     }
@@ -1154,6 +1186,7 @@ mod tests {
             Ok(RecordBatch {
                 records,
                 shard_end: true,
+                millis_behind_latest: None,
             })
         }
         // Override: the efficient CHILD_SHARDS path (counted separately, and
@@ -1231,6 +1264,103 @@ mod tests {
         assert!(
             child.load(std::sync::atomic::Ordering::SeqCst) >= 2,
             "children found via CHILD_SHARDS, not full scans"
+        );
+    }
+
+    /// A source that reports a fixed per-batch lag, to prove the fleet forwards
+    /// `millis_behind_latest` (MillisBehindLatest) and throughput to the sink.
+    struct LagSource;
+    #[async_trait::async_trait]
+    impl AsyncStreamSource for LagSource {
+        async fn describe_shards(&self) -> Result<Vec<ShardMeta>, WorkerError> {
+            Ok(vec![ShardMeta {
+                id: "s0".into(),
+                parents: vec![],
+            }])
+        }
+        async fn get_records(
+            &self,
+            _shard: &str,
+            after: Option<String>,
+        ) -> Result<RecordBatch, WorkerError> {
+            // One batch of 2 records, then SHARD_END; carry a lag of 1234ms.
+            if after.is_some() {
+                return Ok(RecordBatch {
+                    records: vec![],
+                    shard_end: true,
+                    millis_behind_latest: None,
+                });
+            }
+            Ok(RecordBatch {
+                records: vec![rec("s0", "1"), rec("s0", "2")],
+                shard_end: false,
+                millis_behind_latest: Some(1234),
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct CaptureSink {
+        batches: Mutex<Vec<CapturedBatch>>,
+        describes: std::sync::atomic::AtomicU64,
+        shard_ends: std::sync::atomic::AtomicU64,
+    }
+    impl amazon_dynamodb_streams_consumer_core::metrics::MetricsSink for CaptureSink {
+        fn on_batch(&self, m: &ShardMetrics<'_>) {
+            self.batches.lock().unwrap().push((
+                m.shard_id.to_string(),
+                m.records,
+                m.bytes,
+                m.millis_behind_latest,
+            ));
+        }
+        fn on_describe_stream(&self) {
+            self.describes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn on_shard_end(&self, _shard_id: &str) {
+            self.shard_ends
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// The fleet forwards per-batch lag/throughput, shard-end, and DescribeStream
+    /// events to the attached metrics sink (Model A's data source).
+    #[tokio::test]
+    async fn fleet_emits_metrics_to_sink() {
+        let sink = Arc::new(CaptureSink::default());
+        let recording: Sink = Arc::new(Mutex::new(HashMap::new()));
+        let factory = Arc::new(RecordingFactory { sink: recording });
+        let fleet = Fleet::new(
+            LagSource,
+            FakeLeases::default(),
+            Arc::new(SyncConsumerFactory::new(factory)),
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 1000,
+                poll_interval_ms: 1,
+            },
+        )
+        .with_metrics(sink.clone());
+
+        fleet.run_until_complete(5).await.unwrap();
+
+        let batches = sink.batches.lock().unwrap();
+        assert_eq!(batches.len(), 1, "one non-empty batch delivered");
+        let (shard, records, bytes, lag) = &batches[0];
+        assert_eq!(shard, "s0");
+        assert_eq!(*records, 2, "2 records");
+        assert_eq!(*bytes, 0, "empty payloads in this fake → 0 bytes");
+        assert_eq!(*lag, Some(1234), "MillisBehindLatest forwarded to the sink");
+        assert!(
+            sink.describes.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+            "leader DescribeStream counted"
+        );
+        assert_eq!(
+            sink.shard_ends.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "shard-end emitted once"
         );
     }
 }

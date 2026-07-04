@@ -16,6 +16,7 @@ pub mod backoff;
 pub mod cleanup;
 pub mod coordinator;
 pub mod leader;
+pub mod metrics;
 pub mod multistream;
 pub mod record;
 pub mod taker;
@@ -51,6 +52,11 @@ pub struct RecordBatch {
     pub records: Vec<Record>,
     /// True when this shard is closed (SHARD_END) — no more records will arrive.
     pub shard_end: bool,
+    /// Consumer lag for this batch: `now - ApproximateCreationDateTime` of the
+    /// newest record, in milliseconds. `None` when unknown (empty batch or the
+    /// source doesn't populate it). This is the DynamoDB-Streams analog of
+    /// Kinesis `MillisBehindLatest`, computed by the source (see the DDB source).
+    pub millis_behind_latest: Option<i64>,
 }
 
 /// The stream side (DynamoDB Streams in prod). Behind a trait so the engine is
@@ -193,6 +199,7 @@ mod tests {
             RecordBatch {
                 records,
                 shard_end: true,
+                millis_behind_latest: None,
             }
         }
     }
