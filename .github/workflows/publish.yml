@@ -134,3 +134,7 @@ jobs:
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist
+          # TestPyPI/PyPI forbid re-uploading an existing filename. Skip files
+          # already present so re-runs (and re-tagging the same version during
+          # alpha) are idempotent instead of failing the whole job.
+          skip-existing: true
