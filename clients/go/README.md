@@ -75,6 +75,30 @@ Call `w.Stop()` from another goroutine for a graceful shutdown.
 `Null` → `nil`, `B` → `[]byte`, `M` → `map[string]any`, `L` → `[]any`,
 `Ss`/`Ns` → `[]string`, `Bs` → `[][]byte`.
 
+## Record format: native (default) vs DynamoDB JSON
+
+By default your processor gets **plain Go values** — no `{"S": ...}` /
+`{"N": ...}` type wrappers to unpack. That hand-written `AttributeValue`
+unmarshalling is already done for you.
+
+To instead receive **canonical DynamoDB JSON** (the typed
+`{"S"|"N"|"BOOL"|"NULL"|"B"|"M"|"L"|"SS"|"NS"|"BS"}` shape the AWS SDKs consume —
+handy for KCL migration or writing items straight back with the SDK), set
+`Config.RecordFormat` to `"ddb_json"`. One top-level switch, applied to every
+record.
+
+```go
+ddbstreams.New(ddbstreams.Config{
+	// ...
+	RecordFormat: "ddb_json", // default is "native"
+})
+// native:   r.NewImage == map[string]any{"id": "42", "active": true}
+// ddb_json: r.NewImage == map[string]any{"id": map[string]any{"N": "42"}, ...}
+```
+
+Numbers stay strings in both modes to avoid precision loss. This is a
+client-side presentation choice — the wire protocol is unchanged.
+
 ## Testing
 
 ```bash

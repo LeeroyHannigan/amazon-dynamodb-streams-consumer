@@ -43,6 +43,30 @@ DynamoDB balance shards across workers automatically.
 native Python (`S`→str, `N`→str to stay lossless, `Bool`→bool, `Null`→None,
 `B`→bytes, `M`→dict, `L`→list, sets→list).
 
+## Record format: native (default) vs DynamoDB JSON
+
+By default your processor gets **plain Python values** — no `{"S": ...}` /
+`{"N": ...}` type wrappers to unpack. This is the point of the library: the
+DynamoDB-JSON unmarshalling that KCL/`AttributeValue` users write by hand is
+already done for you.
+
+If you'd rather receive **canonical DynamoDB JSON** (the typed
+`{"S"|"N"|"BOOL"|"NULL"|"B"|"M"|"L"|"SS"|"NS"|"BS"}` shape the AWS SDKs and
+`boto3`'s `TypeDeserializer` consume — useful when migrating from KCL or writing
+items straight back with the SDK), set `record_format="ddb_json"` on the
+`Worker`. It's a single top-level switch that applies to every record.
+
+```python
+# default — native Python values
+Worker(..., record_format="native")   # r.new_image == {"id": "42", "active": True}
+
+# opt in — canonical DynamoDB JSON
+Worker(..., record_format="ddb_json")  # r.new_image == {"id": {"N": "42"}, "active": {"BOOL": True}}
+```
+
+Numbers stay strings in both modes to avoid float precision loss. This is a
+client-side presentation choice — the wire protocol is unchanged.
+
 ## The sidecar binary
 
 The library needs the `amazon-dynamodb-streams-consumer-sidecar` binary. **When

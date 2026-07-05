@@ -29,6 +29,7 @@ project is not yet recommended for production use. Feedback and issues are welco
 - Multi-worker coordination through a DynamoDB lease table, with automatic shard balancing and failover.
 - At-least-once processing with checkpointing; a worker resumes from the last checkpoint after failure.
 - Horizontal scaling by running additional worker processes — no configuration changes required.
+- Native record decoding by default — your processor receives plain language values, not DynamoDB-JSON `AttributeValue` wrappers; opt into canonical DynamoDB JSON per worker when you need SDK interop or KCL-migration parity.
 - Optional metrics (consumer lag / `MillisBehindLatest`, throughput, shard lifecycle) exported over OpenTelemetry (OTLP), including directly to Amazon CloudWatch's native OTLP endpoint with no collector.
 - Language clients that are thin and dependency-free; the Rust core and sidecar contain all coordination logic.
 
@@ -137,6 +138,15 @@ are taken over automatically.
 
 **Checkpointing.** After a batch is processed and acknowledged, the last sequence number is stored on the
 lease. A worker that takes over a shard resumes immediately after that sequence number.
+
+**Record format.** By default the processor receives item images (`keys`, `new_image`, `old_image`) as
+**native language values** — plain dicts/maps, strings, booleans, etc. — so you never hand-unmarshal
+DynamoDB-JSON `AttributeValue` wrappers (a common KCL pain point). Set the worker-level option
+`record_format` (`RecordFormat` in Go, `recordFormat` in Node) to `ddb_json` to instead receive **canonical
+DynamoDB JSON** (`{"S"|"N"|"BOOL"|"NULL"|"B"|"M"|"L"|"SS"|"NS"|"BS"}`) — the shape the AWS SDKs and boto3's
+`TypeDeserializer` consume — for SDK interop or migrating from KCL. It is one switch set once for the whole
+processor; numbers stay strings in both modes to avoid precision loss. See each client's README for the exact
+syntax.
 
 ## Metrics
 

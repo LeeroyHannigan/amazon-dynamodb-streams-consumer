@@ -60,6 +60,30 @@ worker.run().then((code) => console.log('exited', code)); // resolves on shutdow
 `Null` → `null`, `B` → `Buffer`, `M` → object, `L` → array, `Ss`/`Ns` →
 `string[]`, `Bs` → `Buffer[]`.
 
+## Record format: native (default) vs DynamoDB JSON
+
+By default your processor gets **plain JS values** — no `{"S": ...}` /
+`{"N": ...}` type wrappers to unpack. That hand-written `AttributeValue`
+unmarshalling is already done for you.
+
+To instead receive **canonical DynamoDB JSON** (the typed
+`{"S"|"N"|"BOOL"|"NULL"|"B"|"M"|"L"|"SS"|"NS"|"BS"}` shape the AWS SDKs consume —
+handy for KCL migration or writing items straight back with the SDK), set
+`recordFormat: 'ddb_json'` on the `Worker`. One top-level switch, applied to
+every record.
+
+```js
+new Worker({
+  // ...
+  recordFormat: 'ddb_json', // default is 'native'
+});
+// native:   r.newImage === { id: '42', active: true }
+// ddb_json: r.newImage === { id: { N: '42' }, active: { BOOL: true } }
+```
+
+Numbers stay strings in both modes to avoid precision loss. This is a
+client-side presentation choice — the wire protocol is unchanged.
+
 ## TypeScript
 
 The client is written in TypeScript; the published package ships compiled
