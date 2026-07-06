@@ -142,6 +142,12 @@ public sealed class Worker
                             _config.Processor.ShardEnded(sc.GetString() ?? "");
                         }
                         break;
+                    case "lease_lost":
+                        if (root.TryGetProperty("shard", out var ll))
+                        {
+                            _config.Processor.LeaseLost(ll.GetString() ?? "");
+                        }
+                        break;
                     case "shutdown":
                         StopInternal(stdin);
                         break;

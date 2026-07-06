@@ -524,14 +524,20 @@ where
             match consumer.deliver(&batch.records).await {
                 Ok(Some(ack)) => match leases.checkpoint(&shard, &owner, counter, &ack).await {
                     Ok(c) => counter = c,
-                    Err(_) => return Ok(()), // lease lost → stop
+                    Err(_) => {
+                        let _ = consumer.lease_lost().await; // lease lost → notify + stop
+                        return Ok(());
+                    }
                 },
                 Ok(None) => {
                     // Delivered but not acked: hold the lease without advancing
                     // the durable checkpoint (heartbeat).
                     match leases.renew(&shard, &owner, counter).await {
                         Ok(c) => counter = c,
-                        Err(_) => return Ok(()),
+                        Err(_) => {
+                            let _ = consumer.lease_lost().await;
+                            return Ok(());
+                        }
                     }
                 }
                 Err(_) => return Ok(()), // delivery failed → stop; lease expires

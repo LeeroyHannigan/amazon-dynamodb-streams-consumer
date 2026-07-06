@@ -166,7 +166,9 @@ async fn run_client(
                 stdin.write_all(ack.to_line().as_bytes()).await?;
                 stdin.flush().await?;
             }
-            Ok(ServerMessage::ShardComplete { .. }) | Ok(ServerMessage::Shutdown { .. }) => {}
+            Ok(ServerMessage::ShardComplete { .. })
+            | Ok(ServerMessage::LeaseLost { .. })
+            | Ok(ServerMessage::Shutdown { .. }) => {}
             Err(_) => {}
         }
     }

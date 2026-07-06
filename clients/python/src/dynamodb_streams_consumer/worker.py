@@ -11,6 +11,7 @@ Example::
                 print(r.event_name, r.keys, r.new_image)
         # optional:
         def shard_ended(self, shard_id): ...
+        def lease_lost(self, shard_id): ...
 
     Worker(
         stream_arn="arn:aws:dynamodb:...:table/Orders/stream/2026-...",
@@ -192,6 +193,12 @@ class Worker:
             ended = getattr(self.processor, "shard_ended", None)
             if callable(ended):
                 ended(msg["shard"])
+        elif kind == "lease_lost":
+            # Lease stolen or expired: notify the processor but do NOT checkpoint —
+            # the lease is no longer held by this worker.
+            lost = getattr(self.processor, "lease_lost", None)
+            if callable(lost):
+                lost(msg["shard"])
         # "shutdown" handled by the caller loop.
 
     def _stop(self) -> None:

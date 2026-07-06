@@ -149,6 +149,11 @@ pub trait AsyncShardConsumer: Send {
     ) -> Result<Option<String>, WorkerError>;
     /// The shard reached SHARD_END.
     async fn shard_ended(&mut self) -> Result<(), WorkerError>;
+    /// The worker lost this shard's lease (stolen/expired). Default: no-op.
+    /// Sidecar consumers forward this to the client's processor.
+    async fn lease_lost(&mut self) -> Result<(), WorkerError> {
+        Ok(())
+    }
 }
 
 /// Creates one [`AsyncShardConsumer`] per shard (KCL's per-shard processor model).
@@ -198,6 +203,10 @@ impl AsyncShardConsumer for SyncConsumer {
     }
     async fn shard_ended(&mut self) -> Result<(), WorkerError> {
         self.processor.shard_ended(&self.shard);
+        Ok(())
+    }
+    async fn lease_lost(&mut self) -> Result<(), WorkerError> {
+        self.processor.lease_lost(&self.shard);
         Ok(())
     }
 }

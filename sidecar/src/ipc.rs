@@ -190,6 +190,16 @@ impl AsyncShardConsumer for IpcConsumer {
             .await;
         Ok(())
     }
+
+    async fn lease_lost(&mut self) -> Result<(), WorkerError> {
+        let _ = self
+            .ipc
+            .send(&ServerMessage::LeaseLost {
+                shard: self.shard.clone(),
+            })
+            .await;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

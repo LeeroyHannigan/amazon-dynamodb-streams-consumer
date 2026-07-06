@@ -30,6 +30,14 @@ type ShardEndedHandler interface {
 	ShardEnded(shardID string)
 }
 
+// LeaseLostHandler is optionally implemented by a processor to be notified
+// when this worker loses a shard's lease (another worker now owns the shard).
+// Do NOT checkpoint from this callback: the shard is no longer owned by this
+// worker.
+type LeaseLostHandler interface {
+	LeaseLost(shardID string)
+}
+
 // Config configures a Worker. StreamArn, LeaseTable, and Processor are required.
 type Config struct {
 	StreamArn  string
@@ -198,6 +206,12 @@ func (w *Worker) Run() (int, error) {
 		case "shard_complete":
 			if h, ok := w.cfg.Processor.(ShardEndedHandler); ok {
 				h.ShardEnded(msg.Shard)
+			}
+		case "lease_lost":
+			// This worker lost the shard's lease; another worker now owns it.
+			// Do not checkpoint -- we no longer own the shard.
+			if h, ok := w.cfg.Processor.(LeaseLostHandler); ok {
+				h.LeaseLost(msg.Shard)
 			}
 		case "shutdown":
 			w.stop()

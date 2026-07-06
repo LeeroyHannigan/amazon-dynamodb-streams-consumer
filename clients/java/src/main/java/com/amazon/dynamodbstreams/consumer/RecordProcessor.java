@@ -15,4 +15,14 @@ public interface RecordProcessor {
     default void shardEnded(String shardId) {
         // no-op by default
     }
+
+    /**
+     * Called when this worker loses the lease for a shard (another worker took
+     * it over, or the lease expired). Delivery for the shard stops. Do NOT
+     * checkpoint from this callback -- the shard is no longer owned by this
+     * worker. Default: no-op.
+     */
+    default void leaseLost(String shardId) {
+        // no-op by default
+    }
 }

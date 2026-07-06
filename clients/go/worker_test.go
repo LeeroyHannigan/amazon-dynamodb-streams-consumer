@@ -104,6 +104,40 @@ func TestConformance(t *testing.T) {
 	}
 }
 
+// leaseLostProc records LeaseLost callbacks and asserts no checkpointing is
+// expected on lease loss (the worker must not ack a lost shard).
+type leaseLostProc struct{ lost []string }
+
+func (p *leaseLostProc) ProcessRecords(records []Record) {}
+func (p *leaseLostProc) LeaseLost(shardID string)        { p.lost = append(p.lost, shardID) }
+
+// A lease_lost message must be dispatched to the processor's LeaseLost, exactly
+// as shard_complete is dispatched to ShardEnded.
+func TestLeaseLostDispatch(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not found")
+	}
+	// Emit a lease_lost line, then shutdown so Run returns.
+	script := `printf '%s\n' '{"type":"lease_lost","shard":"shard-1"}' '{"type":"shutdown"}'`
+	p := &leaseLostProc{}
+	w, err := New(Config{
+		StreamArn:  "arn:aws:dynamodb:us-east-1:1:table/T/stream/2026",
+		LeaseTable: "leases",
+		Processor:  p,
+		SidecarCmd: []string{sh, "-c", script},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := w.Run(); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(p.lost) != 1 || p.lost[0] != "shard-1" {
+		t.Fatalf("LeaseLost dispatch = %v, want [shard-1]", p.lost)
+	}
+}
+
 func pythonBin(t *testing.T) string {
 	for _, name := range []string{"python3", "python"} {
 		if p, err := exec.LookPath(name); err == nil {

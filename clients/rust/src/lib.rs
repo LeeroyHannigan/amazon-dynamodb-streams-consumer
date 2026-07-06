@@ -238,6 +238,9 @@ pub trait RecordProcessor: Send {
     fn initialize(&mut self, _shard_id: &str) {}
     /// Called when the shard reaches SHARD_END (fully consumed). Default: no-op.
     fn shard_ended(&mut self, _shard_id: &str) {}
+    /// Called when this worker loses the shard's lease (stolen or expired).
+    /// Delivery has stopped and you must not checkpoint. Default: no-op.
+    fn lease_lost(&mut self, _shard_id: &str) {}
 }
 
 /// Creates one [`RecordProcessor`] per shard (KCL's per-shard processor model).
@@ -270,6 +273,10 @@ impl CoreProcessor for Adapter {
 
     fn shard_ended(&mut self, shard: &ShardId) {
         self.inner.shard_ended(shard);
+    }
+
+    fn lease_lost(&mut self, shard: &ShardId) {
+        self.inner.lease_lost(shard);
     }
 }
 

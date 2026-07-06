@@ -51,6 +51,9 @@ def main():
             break
 
     emit({"type": "shard_complete", "shard": "s1"})
+    # s0's lease was stolen/expired: the client must dispatch this without
+    # checkpointing (a checkpoint here would trip the ack guard above).
+    emit({"type": "lease_lost", "shard": "s0"})
     emit({"type": "shutdown", "reason": "done"})
     sys.exit(0)
 

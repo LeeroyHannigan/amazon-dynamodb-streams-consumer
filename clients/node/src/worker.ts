@@ -8,6 +8,12 @@ export { VERSION };
 export interface RecordProcessor {
   processRecords(records: Record[]): void;
   shardEnded?(shardId: string): void;
+  /**
+   * Called when this worker loses a shard's lease (another worker took it, or
+   * the lease expired). Optional. Do NOT checkpoint here — the shard is no
+   * longer owned by this worker.
+   */
+  leaseLost?(shardId: string): void | Promise<void>;
 }
 
 export interface WorkerConfig {
@@ -117,6 +123,11 @@ export class Worker {
           }
           case 'shard_complete':
             this.config.processor.shardEnded?.(msg.shard as string);
+            break;
+          case 'lease_lost':
+            // Lease for this shard was lost; surface to the processor but do
+            // NOT checkpoint — the shard is no longer owned by this worker.
+            this.config.processor.leaseLost?.(msg.shard as string);
             break;
           case 'shutdown':
             this.stopInternal();

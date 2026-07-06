@@ -54,12 +54,16 @@ class _Collector:
     def __init__(self):
         self.records = []
         self.ended = []
+        self.lost = []
 
     def process_records(self, records):
         self.records.extend(records)
 
     def shard_ended(self, shard_id):
         self.ended.append(shard_id)
+
+    def lease_lost(self, shard_id):
+        self.lost.append(shard_id)
 
 
 class TestWorkerAgainstFakeSidecar(unittest.TestCase):
@@ -88,6 +92,9 @@ class TestWorkerAgainstFakeSidecar(unittest.TestCase):
         # shard_complete over the wire invoked the optional shard_ended callback,
         # and the malformed line between batches was ignored (no crash, all acks).
         self.assertEqual(proc.ended, ["s1"])
+        # lease_lost over the wire invoked the optional lease_lost callback with
+        # the shard id, and did NOT emit a checkpoint (the fake would exit 3).
+        self.assertEqual(proc.lost, ["s0"])
 
 
 class _MinimalProcessor:

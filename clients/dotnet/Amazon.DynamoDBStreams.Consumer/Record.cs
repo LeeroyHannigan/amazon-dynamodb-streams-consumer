@@ -54,4 +54,11 @@ public interface IRecordProcessor
 
     /// <summary>Called when the shard reaches SHARD_END. Default: no-op.</summary>
     void ShardEnded(string shardId) { }
+
+    /// <summary>
+    /// Called when this worker loses the lease for a shard (another worker has
+    /// taken over, or the lease expired). Do not checkpoint from this callback:
+    /// the shard is no longer owned by this worker. Default: no-op.
+    /// </summary>
+    void LeaseLost(string shardId) { }
 }

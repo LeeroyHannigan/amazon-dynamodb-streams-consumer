@@ -214,6 +214,9 @@ pub trait RecordProcessor {
     fn initialize(&mut self, shard: &ShardId);
     fn process_records(&mut self, records: &[Record]);
     fn shard_ended(&mut self, shard: &ShardId);
+    /// The worker lost this shard's lease (stolen or expired). Delivery has
+    /// stopped; do NOT checkpoint. Default: no-op. Mirrors KCL `leaseLost`.
+    fn lease_lost(&mut self, _shard: &ShardId) {}
 }
 
 /// Creates one [`RecordProcessor`] per shard, as KCL does (a
