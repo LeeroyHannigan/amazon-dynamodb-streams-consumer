@@ -95,6 +95,16 @@ impl Ipc {
             .await;
     }
 
+    /// Best-effort notify the client that a shard's lease is about to be handed
+    /// off, so its processor can flush before another worker takes over.
+    pub async fn shutdown_requested(&self, shard: &str) {
+        let _ = self
+            .send(&ServerMessage::ShutdownRequested {
+                shard: shard.to_string(),
+            })
+            .await;
+    }
+
     /// True once the client has asked to stop or disconnected.
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(std::sync::atomic::Ordering::SeqCst)

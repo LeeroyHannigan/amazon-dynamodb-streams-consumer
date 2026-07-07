@@ -25,4 +25,13 @@ public interface RecordProcessor {
     default void leaseLost(String shardId) {
         // no-op by default
     }
+
+    /**
+     * Called when the sidecar asks this worker to wind down a shard (graceful
+     * shutdown). This is a signal only -- do NOT checkpoint from this callback;
+     * the last acked position has already been committed. Default: no-op.
+     */
+    default void shutdownRequested(String shardId) {
+        // no-op by default
+    }
 }

@@ -17,6 +17,8 @@
 //!   DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS   sleep between coordination cycles (default 1000)
 //!   DDB_STREAMS_CONSUMER_INITIAL_POSITION    start position for freshly-seeded
 //!                                            shards: TRIM_HORIZON (default) or LATEST
+//!   DDB_STREAMS_CONSUMER_GRACEFUL_SHUTDOWN_MS window to let processors flush on
+//!                                            shutdown before releasing leases (default 5000)
 //!   AWS_REGION / standard AWS env  used by the SDK for creds + region
 
 mod ipc;
@@ -25,12 +27,80 @@ mod otel;
 
 use amazon_dynamodb_streams_consumer_core::coordinator::LeaseCoordinator;
 use amazon_dynamodb_streams_consumer_core::InitialPosition;
+use amazon_dynamodb_streams_consumer_core::ShardId;
 use amazon_dynamodb_streams_consumer_lease::dynamodb::DynamoDbLeaseStore;
 use amazon_dynamodb_streams_consumer_source::aws::DdbStreamsSource;
 use amazon_dynamodb_streams_consumer_worker::fleet::{Fleet, FleetConfig, Leadership};
+use amazon_dynamodb_streams_consumer_worker::{AsyncLeaseStore, AsyncStreamSource, WorkerError};
 use ipc::{Ipc, IpcConsumerFactory};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// The lease side of a graceful handoff: which shards this worker still owns,
+/// and releasing them. Abstracted over [`Fleet`] so the handoff ordering can be
+/// unit tested without a real source/lease store.
+#[async_trait::async_trait]
+trait LeaseHandoff {
+    async fn list_owned(&self) -> Result<Vec<ShardId>, WorkerError>;
+    async fn release_all_owned(&self) -> Result<usize, WorkerError>;
+}
+
+#[async_trait::async_trait]
+impl<S, L> LeaseHandoff for Fleet<S, L>
+where
+    S: AsyncStreamSource + Send + Sync + 'static,
+    L: AsyncLeaseStore + Send + Sync + 'static,
+{
+    async fn list_owned(&self) -> Result<Vec<ShardId>, WorkerError> {
+        self.owned_shards().await
+    }
+    async fn release_all_owned(&self) -> Result<usize, WorkerError> {
+        self.release_owned().await
+    }
+}
+
+/// The client-notification side of a graceful handoff. Abstracted over [`Ipc`]
+/// so the handoff ordering can be unit tested without a real stdio client.
+#[async_trait::async_trait]
+trait ShutdownNotifier {
+    async fn notify_shutdown(&self, shard: &str);
+}
+
+#[async_trait::async_trait]
+impl ShutdownNotifier for Ipc {
+    async fn notify_shutdown(&self, shard: &str) {
+        self.shutdown_requested(shard).await;
+    }
+}
+
+/// Graceful lease handoff (ordering-critical): notify the client for EACH owned
+/// shard so its processor can flush/close, wait a bounded window, and only THEN
+/// release the leases so another worker takes over immediately (vs waiting for
+/// expiry). Every notification MUST precede the release — that is what lets a
+/// processor commit its last acked position before the lease moves. If the
+/// owned-shard lookup fails we skip notifications but still release, so leases
+/// are never stranded. Extracted from `main` so the ordering is unit tested.
+async fn graceful_handoff<H, N>(handoff: &H, notifier: &N, graceful_shutdown_timeout_ms: u64)
+where
+    H: LeaseHandoff + ?Sized,
+    N: ShutdownNotifier + ?Sized,
+{
+    match handoff.list_owned().await {
+        Ok(owned) if !owned.is_empty() => {
+            for shard in &owned {
+                notifier.notify_shutdown(shard).await;
+            }
+            // Give processors a bounded window to flush before the lease moves.
+            tokio::time::sleep(Duration::from_millis(graceful_shutdown_timeout_ms)).await;
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("[sidecar] owned-shards lookup error: {e}"),
+    }
+    match handoff.release_all_owned().await {
+        Ok(n) => eprintln!("[sidecar] released {n} lease(s)"),
+        Err(e) => eprintln!("[sidecar] lease release error: {e}"),
+    }
+}
 
 struct Config {
     stream_arn: String,
@@ -41,6 +111,7 @@ struct Config {
     poll_interval_ms: u64,
     cycle_interval_ms: u64,
     initial_position: InitialPosition,
+    graceful_shutdown_timeout_ms: u64,
 }
 
 impl Config {
@@ -70,6 +141,10 @@ impl Config {
             poll_interval_ms: opt_u64("DDB_STREAMS_CONSUMER_POLL_INTERVAL_MS", 1_000),
             cycle_interval_ms: opt_u64("DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS", 1_000),
             initial_position,
+            graceful_shutdown_timeout_ms: opt_u64(
+                "DDB_STREAMS_CONSUMER_GRACEFUL_SHUTDOWN_MS",
+                5_000,
+            ),
         })
     }
 }
@@ -171,12 +246,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    // Graceful shutdown: release our leases so another worker takes over
-    // immediately instead of waiting for expiry.
-    match fleet.release_owned().await {
-        Ok(n) => eprintln!("[sidecar] released {n} lease(s)"),
-        Err(e) => eprintln!("[sidecar] lease release error: {e}"),
-    }
+    // Graceful handoff: notify each owned shard so its processor can flush/close,
+    // wait a bounded window, THEN release the leases (see `graceful_handoff`).
+    graceful_handoff(&fleet, &*ipc, cfg.graceful_shutdown_timeout_ms).await;
 
     // Flush any buffered metrics before exit so the final interval isn't lost.
     #[cfg(feature = "otel")]
@@ -193,8 +265,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
-    use std::sync::Mutex;
+    use super::{graceful_handoff, Config, LeaseHandoff, ShutdownNotifier};
+    use amazon_dynamodb_streams_consumer_core::ShardId;
+    use amazon_dynamodb_streams_consumer_worker::WorkerError;
+    use std::sync::{Arc, Mutex};
 
     // Env is process-global; serialize the env-touching tests.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -208,6 +282,7 @@ mod tests {
         "DDB_STREAMS_CONSUMER_POLL_INTERVAL_MS",
         "DDB_STREAMS_CONSUMER_CYCLE_INTERVAL_MS",
         "DDB_STREAMS_CONSUMER_INITIAL_POSITION",
+        "DDB_STREAMS_CONSUMER_GRACEFUL_SHUTDOWN_MS",
         "HOSTNAME",
     ];
 
@@ -265,5 +340,100 @@ mod tests {
         assert_eq!(c.poll_interval_ms, 200);
         assert_eq!(c.cycle_interval_ms, 250);
         clear();
+    }
+
+    // ---- graceful_handoff ordering ----
+    // A shared, ordered event log proves the ordering contract: every owned
+    // shard is notified BEFORE the leases are released.
+    #[derive(Clone, PartialEq, Debug)]
+    enum Ev {
+        Notify(String),
+        Release,
+    }
+
+    struct FakeHandoff {
+        owned: Vec<ShardId>,
+        fail_lookup: bool,
+        log: Arc<Mutex<Vec<Ev>>>,
+    }
+    #[async_trait::async_trait]
+    impl LeaseHandoff for FakeHandoff {
+        async fn list_owned(&self) -> Result<Vec<ShardId>, WorkerError> {
+            if self.fail_lookup {
+                return Err("owned-shards lookup failed".into());
+            }
+            Ok(self.owned.clone())
+        }
+        async fn release_all_owned(&self) -> Result<usize, WorkerError> {
+            self.log.lock().unwrap().push(Ev::Release);
+            Ok(self.owned.len())
+        }
+    }
+
+    struct FakeNotifier {
+        log: Arc<Mutex<Vec<Ev>>>,
+    }
+    #[async_trait::async_trait]
+    impl ShutdownNotifier for FakeNotifier {
+        async fn notify_shutdown(&self, shard: &str) {
+            self.log.lock().unwrap().push(Ev::Notify(shard.to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn handoff_notifies_every_owned_shard_before_release() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let h = FakeHandoff {
+            owned: vec!["s0".into(), "s1".into(), "s2".into()],
+            fail_lookup: false,
+            log: log.clone(),
+        };
+        let n = FakeNotifier { log: log.clone() };
+
+        graceful_handoff(&h, &n, 0).await;
+
+        let events = log.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec![
+                Ev::Notify("s0".into()),
+                Ev::Notify("s1".into()),
+                Ev::Notify("s2".into()),
+                Ev::Release,
+            ],
+            "all owned shards must be notified, in order, before release"
+        );
+    }
+
+    #[tokio::test]
+    async fn handoff_releases_without_notifying_when_no_shards_owned() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let h = FakeHandoff {
+            owned: vec![],
+            fail_lookup: false,
+            log: log.clone(),
+        };
+        let n = FakeNotifier { log: log.clone() };
+
+        graceful_handoff(&h, &n, 0).await;
+
+        // No shards owned → no notifications, but leases are still released.
+        assert_eq!(log.lock().unwrap().clone(), vec![Ev::Release]);
+    }
+
+    #[tokio::test]
+    async fn handoff_still_releases_when_owned_lookup_fails() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let h = FakeHandoff {
+            owned: vec!["s0".into()],
+            fail_lookup: true,
+            log: log.clone(),
+        };
+        let n = FakeNotifier { log: log.clone() };
+
+        graceful_handoff(&h, &n, 0).await;
+
+        // Lookup failed → skip notifications, but never strand the leases.
+        assert_eq!(log.lock().unwrap().clone(), vec![Ev::Release]);
     }
 }

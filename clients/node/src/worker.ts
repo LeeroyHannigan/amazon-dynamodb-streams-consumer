@@ -14,6 +14,12 @@ export interface RecordProcessor {
    * longer owned by this worker.
    */
   leaseLost?(shardId: string): void | Promise<void>;
+  /**
+   * Called when the sidecar asks this worker to wind down a shard (graceful
+   * shutdown). Optional. This is a signal only — do NOT checkpoint here; the
+   * last acked position has already been committed.
+   */
+  shutdownRequested?(shardId: string): void | Promise<void>;
 }
 
 export interface WorkerConfig {
@@ -128,6 +134,11 @@ export class Worker {
             // Lease for this shard was lost; surface to the processor but do
             // NOT checkpoint — the shard is no longer owned by this worker.
             this.config.processor.leaseLost?.(msg.shard as string);
+            break;
+          case 'shutdown_requested':
+            // Sidecar asked us to wind down this shard; surface to the
+            // processor but do NOT checkpoint — this is a signal only.
+            this.config.processor.shutdownRequested?.(msg.shard as string);
             break;
           case 'shutdown':
             this.stopInternal();

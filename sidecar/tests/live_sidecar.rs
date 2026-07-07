@@ -168,6 +168,7 @@ async fn run_client(
             }
             Ok(ServerMessage::ShardComplete { .. })
             | Ok(ServerMessage::LeaseLost { .. })
+            | Ok(ServerMessage::ShutdownRequested { .. })
             | Ok(ServerMessage::Shutdown { .. }) => {}
             Err(_) => {}
         }

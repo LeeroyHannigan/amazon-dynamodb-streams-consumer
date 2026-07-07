@@ -455,6 +455,23 @@ where
         }
     }
 
+    /// Shard keys this worker currently owns (non-completed leases, excluding the
+    /// leader sentinel). Used to dispatch graceful shutdown-requested
+    /// notifications before releasing the leases.
+    pub async fn owned_shards(&self) -> Result<Vec<ShardId>, WorkerError> {
+        let owner = self.config.owner.as_str();
+        Ok(self
+            .leases
+            .list()
+            .await?
+            .into_iter()
+            .filter(|r| {
+                r.owner.as_deref() == Some(owner) && !r.completed && r.lease_key != LEADER_LEASE_KEY
+            })
+            .map(|r| r.lease_key)
+            .collect())
+    }
+
     /// Release every lease this worker currently owns (graceful shutdown), so
     /// another worker takes over immediately rather than waiting for expiry.
     /// Best-effort per lease: a lease already stolen is skipped. Returns the
@@ -911,6 +928,84 @@ mod tests {
             "parent retained until child processes"
         );
         assert!(after.contains_key("c"));
+    }
+
+    #[tokio::test]
+    async fn owned_shards_excludes_completed_other_owner_released_and_leader_sentinel() {
+        // owned_shards() drives the graceful shutdown-requested notifications, so
+        // it must return exactly the shards THIS worker actively owns: not
+        // completed, not owned by another worker, not released, and never the
+        // leader sentinel (which is coordination state, not a data shard).
+        let leases = FakeLeases::default();
+        {
+            let mut rows = leases.rows.lock().unwrap();
+            // owned + active -> included
+            rows.insert(
+                "s0".into(),
+                State {
+                    owner: Some("w1".into()),
+                    completed: false,
+                    ..Default::default()
+                },
+            );
+            // owned by us but completed -> excluded (nothing to hand off)
+            rows.insert(
+                "s1".into(),
+                State {
+                    owner: Some("w1".into()),
+                    completed: true,
+                    ..Default::default()
+                },
+            );
+            // owned by another worker -> excluded
+            rows.insert(
+                "s2".into(),
+                State {
+                    owner: Some("w2".into()),
+                    completed: false,
+                    ..Default::default()
+                },
+            );
+            // released (no owner) -> excluded
+            rows.insert(
+                "s3".into(),
+                State {
+                    owner: None,
+                    completed: false,
+                    ..Default::default()
+                },
+            );
+            // leader sentinel held by us -> excluded (never a data shard)
+            rows.insert(
+                LEADER_LEASE_KEY.into(),
+                State {
+                    owner: Some("w1".into()),
+                    completed: false,
+                    ..Default::default()
+                },
+            );
+        }
+        let fleet = Fleet::new(
+            FakeSource {
+                metas: vec![],
+                data: HashMap::new(),
+            },
+            leases.clone(),
+            Arc::new(SyncConsumerFactory::new(Arc::new(RecordingFactory {
+                sink: Arc::new(Mutex::new(HashMap::new())),
+            }))),
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 1000,
+                poll_interval_ms: 1,
+                initial_position: InitialPosition::default(),
+            },
+        );
+
+        let mut owned = fleet.owned_shards().await.unwrap();
+        owned.sort();
+        assert_eq!(owned, vec!["s0".to_string()]);
     }
 
     #[tokio::test]

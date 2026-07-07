@@ -38,6 +38,16 @@ type LeaseLostHandler interface {
 	LeaseLost(shardID string)
 }
 
+// ShutdownRequestedHandler is optionally implemented by a processor to be
+// notified when the sidecar begins a graceful shutdown for a shard it still
+// owns. It is called once per owned shard before the lease is handed off, so
+// the processor can flush any buffered work. Do NOT checkpoint from this
+// callback: the lease handoff is imminent and the sidecar controls the final
+// checkpoint.
+type ShutdownRequestedHandler interface {
+	ShutdownRequested(shardID string)
+}
+
 // Config configures a Worker. StreamArn, LeaseTable, and Processor are required.
 type Config struct {
 	StreamArn  string
@@ -212,6 +222,13 @@ func (w *Worker) Run() (int, error) {
 			// Do not checkpoint -- we no longer own the shard.
 			if h, ok := w.cfg.Processor.(LeaseLostHandler); ok {
 				h.LeaseLost(msg.Shard)
+			}
+		case "shutdown_requested":
+			// Graceful shutdown in progress; called once per owned shard before
+			// the lease is handed off so the processor can flush. Do not
+			// checkpoint -- the lease handoff is imminent.
+			if h, ok := w.cfg.Processor.(ShutdownRequestedHandler); ok {
+				h.ShutdownRequested(msg.Shard)
 			}
 		case "shutdown":
 			w.stop()

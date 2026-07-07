@@ -61,4 +61,11 @@ public interface IRecordProcessor
     /// the shard is no longer owned by this worker. Default: no-op.
     /// </summary>
     void LeaseLost(string shardId) { }
+
+    /// <summary>
+    /// Called when the sidecar asks this worker to wind down a shard (graceful
+    /// shutdown). This is a signal only — do not checkpoint from this callback;
+    /// the last acked position has already been committed. Default: no-op.
+    /// </summary>
+    void ShutdownRequested(string shardId) { }
 }

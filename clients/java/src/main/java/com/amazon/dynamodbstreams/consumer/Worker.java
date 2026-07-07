@@ -76,6 +76,9 @@ public final class Worker {
                 case "lease_lost":
                     config.processor.leaseLost(msg.path("shard").asText(""));
                     break;
+                case "shutdown_requested":
+                    config.processor.shutdownRequested(msg.path("shard").asText(""));
+                    break;
                 case "shutdown":
                     stopInternal(stdin);
                     break;

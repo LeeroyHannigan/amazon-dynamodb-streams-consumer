@@ -58,3 +58,43 @@ test('lease_lost is a no-op when the processor omits leaseLost', async () => {
   const code = await w.run();
   assert.strictEqual(code, 0);
 });
+
+test('shutdown_requested dispatches to processor.shutdownRequested with the shard id', async () => {
+  const requested = [];
+  const w = new Worker({
+    streamArn: 'arn:aws:dynamodb:us-east-1:1:table/T/stream/2026',
+    leaseTable: 'leases',
+    processor: {
+      processRecords() {},
+      shutdownRequested(shardId) {
+        requested.push(shardId);
+      },
+    },
+    sidecarCmd: fakeSidecar([
+      { type: 'shutdown_requested', shard: 'shard-000000000001' },
+      { type: 'shutdown' },
+    ]),
+  });
+
+  const code = await w.run();
+  assert.strictEqual(code, 0);
+  assert.deepStrictEqual(requested, ['shard-000000000001']);
+});
+
+test('shutdown_requested is a no-op when the processor omits shutdownRequested', async () => {
+  const w = new Worker({
+    streamArn: 'arn:aws:dynamodb:us-east-1:1:table/T/stream/2026',
+    leaseTable: 'leases',
+    processor: {
+      processRecords() {},
+    },
+    sidecarCmd: fakeSidecar([
+      { type: 'shutdown_requested', shard: 'shard-000000000001' },
+      { type: 'shutdown' },
+    ]),
+  });
+
+  // Should not throw despite the optional callback being absent.
+  const code = await w.run();
+  assert.strictEqual(code, 0);
+});

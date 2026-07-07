@@ -40,6 +40,12 @@ pub enum ServerMessage {
     /// The shard reached SHARD_END; no more records will arrive for it. Its
     /// children (if any) will begin once their parents complete.
     ShardComplete { shard: String },
+    /// The consumer is shutting down gracefully and is about to hand off this
+    /// shard's lease. The client should invoke the processor's
+    /// shutdown-requested hook so it can flush/close resources before the lease
+    /// moves to another worker. Mirrors KCL `shutdownRequested` (as a
+    /// notification — checkpointing here remains automatic/ack-gated).
+    ShutdownRequested { shard: String },
     /// This worker lost the shard's lease (stolen or expired). The client should
     /// invoke the processor's lease-lost hook and MUST NOT checkpoint for it —
     /// another worker now owns the shard. Mirrors KCL `leaseLost`.
@@ -132,6 +138,7 @@ mod tests {
     fn lifecycle_messages_round_trip() {
         for msg in [
             ServerMessage::ShardComplete { shard: "s1".into() },
+            ServerMessage::ShutdownRequested { shard: "s1".into() },
             ServerMessage::LeaseLost { shard: "s1".into() },
             ServerMessage::Shutdown {
                 reason: "SIGTERM".into(),

@@ -55,6 +55,7 @@ class _Collector:
         self.records = []
         self.ended = []
         self.lost = []
+        self.requested = []
 
     def process_records(self, records):
         self.records.extend(records)
@@ -64,6 +65,9 @@ class _Collector:
 
     def lease_lost(self, shard_id):
         self.lost.append(shard_id)
+
+    def shutdown_requested(self, shard_id):
+        self.requested.append(shard_id)
 
 
 class TestWorkerAgainstFakeSidecar(unittest.TestCase):
@@ -95,6 +99,9 @@ class TestWorkerAgainstFakeSidecar(unittest.TestCase):
         # lease_lost over the wire invoked the optional lease_lost callback with
         # the shard id, and did NOT emit a checkpoint (the fake would exit 3).
         self.assertEqual(proc.lost, ["s0"])
+        # shutdown_requested over the wire invoked the optional callback with the
+        # shard id, and did NOT emit a checkpoint (the fake would exit 3).
+        self.assertEqual(proc.requested, ["s1"])
 
 
 class _MinimalProcessor:

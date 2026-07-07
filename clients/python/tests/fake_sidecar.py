@@ -54,6 +54,9 @@ def main():
     # s0's lease was stolen/expired: the client must dispatch this without
     # checkpointing (a checkpoint here would trip the ack guard above).
     emit({"type": "lease_lost", "shard": "s0"})
+    # The sidecar asks to wind down s1: dispatched to the optional callback,
+    # again with NO checkpoint (a checkpoint here would trip the ack guard).
+    emit({"type": "shutdown_requested", "shard": "s1"})
     emit({"type": "shutdown", "reason": "done"})
     sys.exit(0)
 

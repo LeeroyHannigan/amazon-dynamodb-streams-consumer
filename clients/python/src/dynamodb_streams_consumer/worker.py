@@ -12,6 +12,7 @@ Example::
         # optional:
         def shard_ended(self, shard_id): ...
         def lease_lost(self, shard_id): ...
+        def shutdown_requested(self, shard_id): ...
 
     Worker(
         stream_arn="arn:aws:dynamodb:...:table/Orders/stream/2026-...",
@@ -199,6 +200,12 @@ class Worker:
             lost = getattr(self.processor, "lease_lost", None)
             if callable(lost):
                 lost(msg["shard"])
+        elif kind == "shutdown_requested":
+            # Sidecar asked us to wind down this shard: notify the processor but do
+            # NOT checkpoint — this is only a signal, not a processed position.
+            requested = getattr(self.processor, "shutdown_requested", None)
+            if callable(requested):
+                requested(msg["shard"])
         # "shutdown" handled by the caller loop.
 
     def _stop(self) -> None:
