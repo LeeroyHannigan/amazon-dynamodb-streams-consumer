@@ -1920,4 +1920,315 @@ mod tests {
         fleet.set_max_processing_concurrency(4).await;
         assert!(fleet.processing_limit.is_none());
     }
+
+    #[tokio::test]
+    async fn cap_one_fully_serializes() {
+        // cap = 1 → strictly one deliver at a time; all shards still processed.
+        let (fleet, max, delivered) = conc_fleet(5, Some(1));
+        fleet.run_until_complete(10).await.unwrap();
+        assert_eq!(
+            max.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "cap=1 must serialize processing"
+        );
+        assert_eq!(delivered.lock().unwrap().len(), 5, "all shards processed");
+    }
+
+    #[tokio::test]
+    async fn cap_larger_than_shard_count_is_unbounded_in_effect() {
+        // A cap above the shard count never binds: all shards run, concurrency
+        // is limited only by the shard count.
+        let (fleet, max, delivered) = conc_fleet(3, Some(100));
+        fleet.run_until_complete(10).await.unwrap();
+        assert_eq!(delivered.lock().unwrap().len(), 3);
+        assert!(
+            max.load(std::sync::atomic::Ordering::SeqCst) <= 3,
+            "cannot exceed shard count"
+        );
+    }
+
+    #[tokio::test]
+    async fn cap_zero_is_treated_as_unbounded() {
+        // Some(0) must NOT create a zero-permit semaphore (which would deadlock);
+        // it is treated as None (unbounded).
+        let (fleet, _max, _delivered) = conc_fleet(2, Some(0));
+        assert!(
+            fleet.processing_limit.is_none(),
+            "Some(0) must map to unbounded, never a 0-permit semaphore"
+        );
+        fleet.run_until_complete(10).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn many_shards_small_cap_bounds_and_completes() {
+        // Stress: 50 shards, cap = 4 → never more than 4 concurrent, all 50 done.
+        let (fleet, max, delivered) = conc_fleet(50, Some(4));
+        fleet.run_until_complete(10).await.unwrap();
+        assert!(
+            max.load(std::sync::atomic::Ordering::SeqCst) <= 4,
+            "observed {} > cap 4",
+            max.load(std::sync::atomic::Ordering::SeqCst)
+        );
+        let mut got = delivered.lock().unwrap().clone();
+        got.sort();
+        got.dedup();
+        assert_eq!(got.len(), 50, "every one of 50 shards processed");
+    }
+
+    #[tokio::test]
+    async fn cap_no_permit_leak_on_ack_path() {
+        // After a run that acks every batch, all permits are returned (no leak
+        // would silently shrink effective concurrency over time).
+        let (fleet, _max, _delivered) = conc_fleet(8, Some(3));
+        fleet.run_until_complete(10).await.unwrap();
+        let pl = fleet.processing_limit.as_ref().unwrap();
+        assert_eq!(
+            pl.sem.available_permits(),
+            3,
+            "all permits returned after acked deliveries"
+        );
+    }
+
+    /// Consumer that delivers but never acks (returns `None`) — the sidecar
+    /// "client hasn't checkpointed yet" path. Used to prove the permit is
+    /// released regardless of the ack outcome.
+    struct CapNoAckProbe;
+    #[async_trait::async_trait]
+    impl AsyncShardConsumer for CapNoAckProbe {
+        async fn deliver(&mut self, _records: &[Record]) -> Result<Option<String>, WorkerError> {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            Ok(None)
+        }
+        async fn shard_ended(&mut self) -> Result<(), WorkerError> {
+            Ok(())
+        }
+    }
+    struct CapNoAckFactory;
+    impl ShardConsumerFactory for CapNoAckFactory {
+        fn create(&self, _shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send> {
+            Box::new(CapNoAckProbe)
+        }
+    }
+
+    #[tokio::test]
+    async fn cap_no_permit_leak_on_none_ack_path() {
+        let (metas, data) = roots(6);
+        let fleet = Fleet::new(
+            FakeSource { metas, data },
+            FakeLeases::default(),
+            Arc::new(CapNoAckFactory),
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 100_000,
+                poll_interval_ms: 1,
+                initial_position: InitialPosition::default(),
+            },
+        )
+        .with_max_processing_concurrency(Some(2));
+        fleet.run_until_complete(10).await.unwrap();
+        let pl = fleet.processing_limit.as_ref().unwrap();
+        assert_eq!(
+            pl.sem.available_permits(),
+            2,
+            "permit released even when the consumer never acks"
+        );
+    }
+
+    #[tokio::test]
+    async fn cap_does_not_gate_idle_shards() {
+        // Idle shards (no records) never call `deliver`, so they never contend
+        // for a permit: with cap=1 and one slow data shard, the empty shards
+        // still complete. Proves reading/completion aren't gated by the permit.
+        let metas = vec![
+            ShardMeta {
+                id: "s0".into(),
+                parents: vec![],
+            },
+            ShardMeta {
+                id: "s1".into(),
+                parents: vec![],
+            },
+            ShardMeta {
+                id: "s2".into(),
+                parents: vec![],
+            },
+        ];
+        let mut data = HashMap::new();
+        data.insert("s0".to_string(), vec![rec("s0", "1")]); // s1, s2 have no data
+        let leases = FakeLeases::default();
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let factory = Arc::new(ConcFactory {
+            cur: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            delivered: delivered.clone(),
+        });
+        let fleet = Fleet::new(
+            FakeSource { metas, data },
+            leases.clone(),
+            factory,
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 100_000,
+                poll_interval_ms: 1,
+                initial_position: InitialPosition::default(),
+            },
+        )
+        .with_max_processing_concurrency(Some(1));
+        fleet.run_until_complete(10).await.unwrap();
+
+        // All three shards' leases complete (empty ones weren't starved).
+        let rows = leases.rows.lock().unwrap();
+        for s in ["s0", "s1", "s2"] {
+            assert!(
+                rows.get(s).map(|r| r.completed).unwrap_or(false),
+                "{s} complete"
+            );
+        }
+        // Only the shard with data was delivered.
+        assert_eq!(delivered.lock().unwrap().as_slice(), &["s0".to_string()]);
+    }
+
+    /// Records each delivered (shard, seq) in delivery order, with a small yield
+    /// so shard tasks interleave under a cap.
+    struct OrderProbe {
+        shard: ShardId,
+        log: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    #[async_trait::async_trait]
+    impl AsyncShardConsumer for OrderProbe {
+        async fn deliver(&mut self, records: &[Record]) -> Result<Option<String>, WorkerError> {
+            for r in records {
+                self.log
+                    .lock()
+                    .unwrap()
+                    .push((self.shard.clone(), r.seq.clone()));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            Ok(records.last().map(|r| r.seq.clone()))
+        }
+        async fn shard_ended(&mut self) -> Result<(), WorkerError> {
+            Ok(())
+        }
+    }
+    struct OrderFactory {
+        log: Arc<Mutex<Vec<(String, String)>>>,
+    }
+    impl ShardConsumerFactory for OrderFactory {
+        fn create(&self, shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send> {
+            Box::new(OrderProbe {
+                shard: shard.clone(),
+                log: self.log.clone(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn cap_preserves_per_shard_order() {
+        // Multi-record shards under cap=2: each shard's records must arrive in
+        // sequence order (the cap redistributes shards, never reorders within one).
+        let mut data = HashMap::new();
+        for s in ["s0", "s1", "s2"] {
+            data.insert(
+                s.to_string(),
+                vec![rec(s, "1"), rec(s, "2"), rec(s, "3"), rec(s, "4")],
+            );
+        }
+        let metas = ["s0", "s1", "s2"]
+            .iter()
+            .map(|s| ShardMeta {
+                id: (*s).into(),
+                parents: vec![],
+            })
+            .collect();
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let fleet = Fleet::new(
+            FakeSource { metas, data },
+            FakeLeases::default(),
+            Arc::new(OrderFactory { log: log.clone() }),
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 100_000,
+                poll_interval_ms: 1,
+                initial_position: InitialPosition::default(),
+            },
+        )
+        .with_max_processing_concurrency(Some(2));
+        fleet.run_until_complete(10).await.unwrap();
+
+        let log = log.lock().unwrap();
+        for s in ["s0", "s1", "s2"] {
+            let seqs: Vec<&str> = log
+                .iter()
+                .filter(|(sh, _)| sh == s)
+                .map(|(_, q)| q.as_str())
+                .collect();
+            assert_eq!(seqs, vec!["1", "2", "3", "4"], "{s} in-order under cap");
+        }
+    }
+
+    #[tokio::test]
+    async fn cap_preserves_resume_no_redelivery() {
+        // cap=1 over an always-open shard across cycles: each record delivered
+        // exactly once (durable checkpoint resume still holds under the cap).
+        let source = OpenSource {
+            records: vec![rec("s0", "1"), rec("s0", "2"), rec("s0", "3")],
+        };
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let fleet = Fleet::new(
+            source,
+            FakeLeases::default(),
+            Arc::new(OrderFactory { log: log.clone() }),
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 100_000,
+                poll_interval_ms: 1,
+                initial_position: InitialPosition::default(),
+            },
+        )
+        .with_max_processing_concurrency(Some(1));
+        // Several cycles; an always-open shard never completes, so this loops
+        // run_cycle up to the cap and returns after making no further progress.
+        fleet.run_until_complete(4).await.unwrap();
+        let seqs: Vec<String> = log.lock().unwrap().iter().map(|(_, q)| q.clone()).collect();
+        assert_eq!(
+            seqs,
+            vec!["1", "2", "3"],
+            "each record delivered exactly once across cycles under cap=1"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn resize_shrink_waits_for_inflight() {
+        // Shrink must not preempt an in-flight slot: it blocks until a permit is
+        // free, then removes it. Hold both permits, request shrink→1, assert it
+        // stays pending until we release, then completes with max=1.
+        use std::sync::atomic::Ordering::SeqCst;
+        let (fleet, _max, _delivered) = conc_fleet(1, Some(2));
+        let fleet = Arc::new(fleet);
+        let pl = fleet.processing_limit.clone().unwrap();
+
+        let held = pl.sem.acquire_many(2).await.unwrap(); // 0 permits free
+        let f2 = fleet.clone();
+        let mut shrink = tokio::spawn(async move { f2.set_max_processing_concurrency(1).await });
+
+        // With no free permit, the shrink cannot make progress.
+        let pending = tokio::time::timeout(std::time::Duration::from_millis(80), &mut shrink).await;
+        assert!(
+            pending.is_err(),
+            "shrink must wait while permits are in-flight"
+        );
+
+        drop(held); // free both permits → shrink can reclaim one
+        shrink.await.unwrap();
+        assert_eq!(pl.max.load(SeqCst), 1, "max updated after shrink");
+        assert_eq!(
+            pl.sem.available_permits(),
+            1,
+            "one permit reclaimed, one remains"
+        );
+    }
 }
