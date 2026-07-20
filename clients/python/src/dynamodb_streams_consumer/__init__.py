@@ -17,4 +17,4 @@ __all__ = [
     "TRIM_HORIZON",
     "LATEST",
 ]
-__version__ = "0.1.0"
+__version__ = "0.1.4"
