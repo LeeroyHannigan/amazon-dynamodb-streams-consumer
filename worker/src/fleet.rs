@@ -24,6 +24,7 @@ use amazon_dynamodb_streams_consumer_core::{
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 pub struct FleetConfig {
@@ -140,6 +141,23 @@ pub struct Fleet<S, L> {
     /// Metrics sink (default no-op). Emits per-batch lag/throughput,
     /// shard-lifecycle, and DescribeStream events. Set via [`Fleet::with_metrics`].
     metrics: SharedMetricsSink,
+    /// Optional cap on the number of shards whose records are **processed**
+    /// (delivered to the customer consumer) concurrently, across this worker.
+    /// `None` ⇒ unbounded (one processing slot per owned shard — the default,
+    /// behavior-identical to prior releases). `Some(k)` ⇒ at most `k` concurrent
+    /// `deliver` calls; shard *reading* (GetRecords) and lease heartbeats stay
+    /// unbounded, so idle shards keep their leases while queued to process.
+    /// Set via [`Fleet::with_max_processing_concurrency`]. See `docs/multiplexing-design.md`.
+    processing_limit: Option<Arc<ProcessingLimit>>,
+}
+
+/// A processing-concurrency cap: a permit pool (`sem`) plus the configured
+/// maximum (`max`) tracked explicitly, since [`Semaphore`] does not expose its
+/// own ceiling (only currently-free permits). `max` is the source of truth for
+/// [`Fleet::set_max_processing_concurrency`] resizes.
+struct ProcessingLimit {
+    sem: Semaphore,
+    max: std::sync::atomic::AtomicUsize,
 }
 
 /// Shard-sync progress tracked by the leader so it can avoid full `DescribeStream`
@@ -172,6 +190,7 @@ where
             config,
             sync_state: std::sync::Mutex::new(SyncState::default()),
             metrics: noop_sink(),
+            processing_limit: None,
         }
     }
 
@@ -180,6 +199,60 @@ where
     pub fn with_metrics(mut self, metrics: SharedMetricsSink) -> Self {
         self.metrics = metrics;
         self
+    }
+
+    /// Bound the number of shards **processed concurrently** to `max` (opt-in).
+    ///
+    /// `None` (the default) keeps prior behavior: one processing slot per owned
+    /// shard, so per-worker footprint grows with the shard/partition count.
+    /// `Some(k)` (k ≥ 1) caps concurrent customer `deliver` calls at `k`, making
+    /// footprint O(k) independent of shard count while preserving at-least-once,
+    /// per-item, and per-shard ordering (a shard is never split; each shard task
+    /// is sequential and holds at most one permit). `Some(0)` is treated as
+    /// `None` (unbounded) rather than deadlocking.
+    ///
+    /// Reading (GetRecords) and lease heartbeats are intentionally *not* gated,
+    /// so a shard queued for a processing slot keeps its lease and an idle shard
+    /// never contends for a permit.
+    pub fn with_max_processing_concurrency(mut self, max: Option<usize>) -> Self {
+        self.processing_limit = match max {
+            Some(k) if k >= 1 => Some(Arc::new(ProcessingLimit {
+                sem: Semaphore::new(k),
+                max: std::sync::atomic::AtomicUsize::new(k),
+            })),
+            _ => None,
+        };
+        self
+    }
+
+    /// Online resize of the processing-concurrency cap on a running fleet.
+    ///
+    /// Grow adds permits immediately; shrink removes the delta at the next batch
+    /// boundary (it waits for in-flight slots to free, then forgets them), so it
+    /// never interrupts an in-flight `deliver`. Only adjusts a fleet that was
+    /// created bounded (`with_max_processing_concurrency(Some(_))`); switching an
+    /// unbounded fleet to bounded at runtime is unsupported (returns without
+    /// effect) because the slot set is fixed at construction. Call from a single
+    /// controller task (concurrent resizes are not serialized against each other).
+    pub async fn set_max_processing_concurrency(&self, target: usize) {
+        use std::sync::atomic::Ordering;
+        let Some(pl) = self.processing_limit.as_ref() else {
+            return; // unbounded fleet: nothing to resize
+        };
+        let target = target.max(1);
+        let current = pl.max.load(Ordering::SeqCst);
+        if target > current {
+            pl.sem.add_permits(target - current);
+            pl.max.store(target, Ordering::SeqCst);
+        } else if target < current {
+            let take = (current - target) as u32;
+            // Waits for `take` permits to be free (an in-flight deliver keeps its
+            // permit until its batch completes), then permanently removes them.
+            if let Ok(permits) = pl.sem.acquire_many(take).await {
+                permits.forget();
+                pl.max.store(target, Ordering::SeqCst);
+            }
+        }
     }
 
     /// Run coordination cycles until every shard's lease is complete or
@@ -300,6 +373,7 @@ where
                 checkpoint,
                 poll_interval_ms: self.config.poll_interval_ms,
                 metrics: self.metrics.clone(),
+                limit: self.processing_limit.clone(),
             };
             set.spawn(async move {
                 let _ = process_shard(src, lease, consumer, task).await;
@@ -506,6 +580,9 @@ struct ShardTask {
     checkpoint: Option<String>,
     poll_interval_ms: u64,
     metrics: SharedMetricsSink,
+    /// Shared processing-concurrency cap (`None` ⇒ unbounded). A permit is held
+    /// only around `deliver` (+ its checkpoint), not around GetRecords/heartbeat.
+    limit: Option<Arc<ProcessingLimit>>,
 }
 
 /// Drive a single shard: deliver records in order, checkpoint/heartbeat under the
@@ -528,6 +605,7 @@ where
         checkpoint,
         poll_interval_ms,
         metrics,
+        limit,
     } = task;
     // Resume from the lease's persisted checkpoint (None = TRIM_HORIZON for a
     // brand-new shard). This is what makes re-processing idempotent across
@@ -538,6 +616,20 @@ where
         let batch = source.get_records(&shard, after.clone()).await?;
         if !batch.records.is_empty() {
             let last = batch.records.last().unwrap().seq.clone();
+            // Bound concurrent customer processing: acquire a slot before
+            // `deliver` and hold it across the checkpoint, releasing before the
+            // next GetRecords. `None` ⇒ unbounded (prior behavior). Reading and
+            // heartbeats are deliberately outside this permit. The semaphore is
+            // never closed, so acquire cannot fail.
+            let _permit = match limit.as_ref() {
+                Some(pl) => Some(
+                    pl.sem
+                        .acquire()
+                        .await
+                        .expect("processing semaphore is never closed"),
+                ),
+                None => None,
+            };
             // Deliver and let the consumer decide the checkpoint (its ack). A
             // sidecar returns the seq the client durably processed; the sync
             // in-process adapter returns the batch's last seq.
@@ -1676,5 +1768,156 @@ mod tests {
             1,
             "shard-end emitted once"
         );
+    }
+
+    // ---- maxProcessingConcurrency (multiplexing) ----
+
+    /// Consumer that records logical processing concurrency: it increments a
+    /// shared counter on entry to `deliver`, yields (sleep) so sibling shard
+    /// tasks interleave, tracks the observed max, then decrements. Used to prove
+    /// the semaphore caps concurrent `deliver` calls.
+    struct ConcProbe {
+        shard: ShardId,
+        cur: Arc<std::sync::atomic::AtomicUsize>,
+        max: Arc<std::sync::atomic::AtomicUsize>,
+        delivered: Arc<Mutex<Vec<String>>>,
+    }
+    #[async_trait::async_trait]
+    impl AsyncShardConsumer for ConcProbe {
+        async fn deliver(&mut self, records: &[Record]) -> Result<Option<String>, WorkerError> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let now = self.cur.fetch_add(1, SeqCst) + 1;
+            self.max.fetch_max(now, SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            self.cur.fetch_sub(1, SeqCst);
+            self.delivered.lock().unwrap().push(self.shard.clone());
+            Ok(records.last().map(|r| r.seq.clone()))
+        }
+        async fn shard_ended(&mut self) -> Result<(), WorkerError> {
+            Ok(())
+        }
+    }
+    struct ConcFactory {
+        cur: Arc<std::sync::atomic::AtomicUsize>,
+        max: Arc<std::sync::atomic::AtomicUsize>,
+        delivered: Arc<Mutex<Vec<String>>>,
+    }
+    impl ShardConsumerFactory for ConcFactory {
+        fn create(&self, shard: &ShardId) -> Box<dyn AsyncShardConsumer + Send> {
+            Box::new(ConcProbe {
+                shard: shard.clone(),
+                cur: self.cur.clone(),
+                max: self.max.clone(),
+                delivered: self.delivered.clone(),
+            })
+        }
+    }
+
+    fn roots(n: usize) -> (Vec<ShardMeta>, HashMap<ShardId, Vec<Record>>) {
+        let mut metas = Vec::new();
+        let mut data = HashMap::new();
+        for i in 0..n {
+            let id = format!("s{i}");
+            metas.push(ShardMeta {
+                id: id.clone(),
+                parents: vec![],
+            });
+            data.insert(id.clone(), vec![rec(&id, &format!("{i}"))]);
+        }
+        (metas, data)
+    }
+
+    /// (fleet, observed-max-concurrency counter, delivered-shard log) for the
+    /// processing-concurrency tests.
+    type ConcHarness = (
+        Fleet<FakeSource, FakeLeases>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<Mutex<Vec<String>>>,
+    );
+
+    fn conc_fleet(n: usize, cap: Option<usize>) -> ConcHarness {
+        let (metas, data) = roots(n);
+        let source = FakeSource { metas, data };
+        let cur = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let factory = Arc::new(ConcFactory {
+            cur,
+            max: max.clone(),
+            delivered: delivered.clone(),
+        });
+        let fleet = Fleet::new(
+            source,
+            FakeLeases::default(),
+            factory,
+            FleetConfig {
+                owner: "w1".into(),
+                max_leases: 100,
+                lease_duration_ms: 100_000,
+                poll_interval_ms: 1,
+                initial_position: InitialPosition::default(),
+            },
+        )
+        .with_max_processing_concurrency(cap);
+        (fleet, max, delivered)
+    }
+
+    #[tokio::test]
+    async fn max_processing_concurrency_caps_concurrent_deliver() {
+        // 6 shards, cap = 2 → never more than 2 concurrent deliveries, and every
+        // shard is still processed (no starvation).
+        let (fleet, max, delivered) = conc_fleet(6, Some(2));
+        fleet.run_until_complete(10).await.unwrap();
+        assert!(
+            max.load(std::sync::atomic::Ordering::SeqCst) <= 2,
+            "observed concurrency {} exceeded the cap of 2",
+            max.load(std::sync::atomic::Ordering::SeqCst)
+        );
+        let mut got = delivered.lock().unwrap().clone();
+        got.sort();
+        got.dedup();
+        assert_eq!(got.len(), 6, "every shard processed (no starvation)");
+    }
+
+    #[tokio::test]
+    async fn max_processing_concurrency_none_is_unbounded() {
+        // Default (None): all shards processed; the cap does not gate. With 6
+        // sleeping deliveries and no cap, more than 2 run at once — proving None
+        // imposes no artificial limit (and is behavior-identical to prior code).
+        let (fleet, max, delivered) = conc_fleet(6, None);
+        fleet.run_until_complete(10).await.unwrap();
+        assert_eq!(delivered.lock().unwrap().len(), 6, "all shards delivered");
+        assert!(
+            max.load(std::sync::atomic::Ordering::SeqCst) > 2,
+            "unbounded run should exceed 2 concurrent deliveries"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_max_processing_concurrency_grows_and_shrinks() {
+        // Online resize: grow adds permits immediately; shrink reclaims them
+        // (no in-flight permits here, so it takes effect at once).
+        use std::sync::atomic::Ordering::SeqCst;
+        let (fleet, _max, _delivered) = conc_fleet(1, Some(2));
+        let pl = fleet.processing_limit.clone().unwrap();
+        assert_eq!(pl.sem.available_permits(), 2);
+        assert_eq!(pl.max.load(SeqCst), 2);
+
+        fleet.set_max_processing_concurrency(5).await;
+        assert_eq!(pl.sem.available_permits(), 5, "grew to 5 permits");
+        assert_eq!(pl.max.load(SeqCst), 5);
+
+        fleet.set_max_processing_concurrency(1).await;
+        assert_eq!(pl.sem.available_permits(), 1, "shrank to 1 permit");
+        assert_eq!(pl.max.load(SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn set_max_processing_concurrency_noop_on_unbounded() {
+        // Resizing an unbounded (None) fleet is a no-op, not a panic.
+        let (fleet, _max, _delivered) = conc_fleet(1, None);
+        assert!(fleet.processing_limit.is_none());
+        fleet.set_max_processing_concurrency(4).await;
+        assert!(fleet.processing_limit.is_none());
     }
 }
