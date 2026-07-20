@@ -329,6 +329,7 @@ pub struct WorkerBuilder {
     poll_interval_ms: u64,
     initial_position: InitialPosition,
     processor: Option<Arc<dyn RecordProcessorFactory>>,
+    max_processing_concurrency: Option<usize>,
 }
 
 impl Default for WorkerBuilder {
@@ -344,6 +345,7 @@ impl Default for WorkerBuilder {
             poll_interval_ms: 1_000,
             initial_position: InitialPosition::default(),
             processor: None,
+            max_processing_concurrency: None,
         }
     }
 }
@@ -409,6 +411,21 @@ impl WorkerBuilder {
         self
     }
 
+    /// Cap the number of shards this worker **processes concurrently** (opt-in).
+    ///
+    /// Unset (the default) keeps one processing slot per owned shard, so a
+    /// worker's footprint grows with the table's partition/shard count. Setting
+    /// `max` bounds concurrent record delivery to `max`, making footprint O(max)
+    /// independent of shard count, while preserving at-least-once delivery,
+    /// per-item ordering, and per-shard ordering (a shard is never split; each
+    /// shard is processed by one slot at a time). Shard reads and lease
+    /// heartbeats are not gated, so idle shards keep their leases. `0` is treated
+    /// as unset (unbounded).
+    pub fn max_processing_concurrency(mut self, max: usize) -> Self {
+        self.max_processing_concurrency = Some(max);
+        self
+    }
+
     /// Resolve AWS clients and construct the [`Worker`].
     pub async fn build(self) -> Result<Worker, Error> {
         let stream_arn = self.stream_arn.ok_or("stream_arn is required")?;
@@ -448,7 +465,8 @@ impl WorkerBuilder {
                 poll_interval_ms: self.poll_interval_ms,
                 initial_position: self.initial_position,
             },
-        );
+        )
+        .with_max_processing_concurrency(self.max_processing_concurrency);
 
         Ok(Worker {
             fleet,

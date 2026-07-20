@@ -71,6 +71,28 @@ its leases so another worker can take over immediately. Scale out by running the
 same binary on more hosts with a distinct `owner` — leases balance shards across
 workers automatically.
 
+## Bounding footprint: `max_processing_concurrency`
+
+By default the worker processes one shard per concurrent slot, so its footprint
+grows with the table's partition/shard count. To keep footprint constant as a
+table accumulates partitions, cap the number of shards processed concurrently:
+
+```rust
+let worker = Worker::builder()
+    .stream_arn(stream_arn)
+    .lease_table("my-app-leases")
+    .processor(Arc::new(MyFactory))
+    .max_processing_concurrency(8) // at most 8 shards processed at once
+    .build()
+    .await?;
+```
+
+The cap bounds concurrent record delivery only — shard reads and lease
+heartbeats are unaffected, so idle shards keep their leases. It changes no
+delivery semantics: at-least-once, per-item ordering, and per-shard ordering all
+hold (a shard is never split; each shard is processed by one slot at a time).
+Leave it unset for the prior behavior (one slot per shard).
+
 ## Record format: typed by default, native or DynamoDB JSON views
 
 Each `Record` exposes item images **two** ways:
