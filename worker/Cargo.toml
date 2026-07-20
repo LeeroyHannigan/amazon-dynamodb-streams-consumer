@@ -14,7 +14,7 @@ aws = [
 [dependencies]
 amazon-dynamodb-streams-consumer-core = { path = "../core" }
 async-trait = "0.1"
-tokio = { version = "1", features = ["rt", "time", "macros"] }
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
 amazon-dynamodb-streams-consumer-source = { path = "../source-ddbstreams", features = ["aws"], optional = true }
 amazon-dynamodb-streams-consumer-lease = { path = "../lease-dynamodb", features = ["aws"], optional = true }
 
