@@ -496,6 +496,7 @@ where
         if due.is_empty() {
             // Nothing due: sleep to the earliest due_at (capped) so a cycle
             // over an all-idle shard set doesn't spin.
+            self.metrics.on_processing_queue_depth(0);
             let next = {
                 let sched = self.sched.lock().expect("sched mutex poisoned");
                 sched.values().map(|e| e.due_at).min()
@@ -508,6 +509,7 @@ where
             return;
         }
 
+        self.metrics.on_processing_queue_depth(due.len() as u64);
         let pool = Arc::new(std::sync::Mutex::new(PoolState {
             queue: due,
             renewing: 0,
@@ -1977,6 +1979,7 @@ mod tests {
         shard_ends: std::sync::atomic::AtomicU64,
         slot_waits: Mutex<Vec<(String, u64)>>,
         max_concurrency: std::sync::atomic::AtomicU64,
+        max_queue_depth: std::sync::atomic::AtomicU64,
     }
     impl amazon_dynamodb_streams_consumer_core::metrics::MetricsSink for CaptureSink {
         fn on_batch(&self, m: &ShardMetrics<'_>) {
@@ -2004,6 +2007,10 @@ mod tests {
         fn on_max_processing_concurrency(&self, cap: u64) {
             self.max_concurrency
                 .store(cap, std::sync::atomic::Ordering::SeqCst);
+        }
+        fn on_processing_queue_depth(&self, depth: u64) {
+            self.max_queue_depth
+                .fetch_max(depth, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -2529,6 +2536,12 @@ mod tests {
             sink.slot_waits.lock().unwrap().len(),
             6,
             "one slot-wait sample per delivered batch (6 shards)"
+        );
+        assert_eq!(
+            sink.max_queue_depth
+                .load(std::sync::atomic::Ordering::SeqCst),
+            6,
+            "queue-depth gauge reports the 6 due shards at pool start"
         );
     }
 

@@ -50,6 +50,7 @@ pub struct OtelMetricsSink {
     leases_held: Gauge<u64>,
     slot_wait: Gauge<u64>,
     max_concurrency: Gauge<u64>,
+    queue_depth: Gauge<u64>,
     /// Dimensions applied to every metric (worker id, stream) so load can be
     /// attributed per host/stream, matching KCL's WorkerIdentifier/StreamId.
     base_attrs: Vec<KeyValue>,
@@ -162,13 +163,21 @@ impl OtelMetricsSink {
         let slot_wait = meter
             .u64_gauge("ddbstreams.consumer.processing.slot_wait_ms")
             .with_description(
-                "Time a batch waited to acquire a processing slot (max_processing_concurrency)",
+                "Time a due shard waited in the queue before a pool worker claimed it \
+                 (max_processing_concurrency); emitted per claimed pass",
             )
             .with_unit("ms")
             .build();
         let max_concurrency = meter
             .u64_gauge("ddbstreams.consumer.processing.max_concurrency")
             .with_description("Configured max_processing_concurrency cap (0 = unbounded)")
+            .build();
+        let queue_depth = meter
+            .u64_gauge("ddbstreams.consumer.processing.queue_depth")
+            .with_description(
+                "Due shards waiting for or claimed by the processing pool at cycle start; \
+                 persistently above the pool size means the pool is the bottleneck",
+            )
             .build();
 
         // Base dimensions on every metric: worker id + stream, from the same env
@@ -197,6 +206,7 @@ impl OtelMetricsSink {
             leases_held,
             slot_wait,
             max_concurrency,
+            queue_depth,
             base_attrs,
         })
     }
@@ -246,6 +256,9 @@ impl MetricsSink for OtelMetricsSink {
     }
     fn on_max_processing_concurrency(&self, cap: u64) {
         self.max_concurrency.record(cap, &self.base_attrs);
+    }
+    fn on_processing_queue_depth(&self, depth: u64) {
+        self.queue_depth.record(depth, &self.base_attrs);
     }
 }
 

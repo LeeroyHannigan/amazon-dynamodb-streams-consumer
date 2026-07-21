@@ -42,14 +42,26 @@ pub trait MetricsSink: Send + Sync {
     /// Number of shard leases this worker currently holds, reported once per
     /// coordination cycle. Exported as a gauge for rebalance/failover health.
     fn on_leases_held(&self, _count: u64) {}
-    /// Milliseconds a shard's batch waited to acquire a processing slot, emitted
-    /// only when `max_processing_concurrency` is set. ~0 means the cap is not
-    /// binding; a growing value means the cap is throttling processing (raise it
-    /// or scale out). Not emitted when unbounded.
+    /// Milliseconds a shard waited in the due queue before a pool worker
+    /// claimed it for a pass, emitted per claimed pass (including passes that
+    /// deliver no records) when `max_processing_concurrency` is set. ~0 means
+    /// the pool is not the bottleneck; a growing value means shards are
+    /// queuing behind the pool (raise the pool size or scale out). Not
+    /// emitted when unbounded.
+    ///
+    /// Semantics changed in the bounded-pool engine: previously this measured
+    /// permit-wait before record delivery and was emitted only per delivered
+    /// batch. Queue-wait per pass is the pool-contention signal.
     fn on_processing_slot_wait(&self, _shard_id: &str, _wait_ms: u64) {}
     /// The configured processing-concurrency cap, reported once per cycle when
     /// `max_processing_concurrency` is set (gauge). Reflects online resizes.
     fn on_max_processing_concurrency(&self, _cap: u64) {}
+    /// Number of due shards waiting for (or claimed by) the processing pool at
+    /// the start of a cycle's pool run, emitted when
+    /// `max_processing_concurrency` is set (gauge). Persistently above the
+    /// pool size means the pool is the bottleneck — the live counterpart to
+    /// [`MetricsSink::on_processing_slot_wait`]. Not emitted when unbounded.
+    fn on_processing_queue_depth(&self, _depth: u64) {}
 }
 
 /// Default sink that records nothing — metrics are opt-in and cost nothing when
